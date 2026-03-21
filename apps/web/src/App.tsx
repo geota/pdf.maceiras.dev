@@ -3,6 +3,8 @@ import Sidebar, { type Route } from "./components/ui/Sidebar";
 import PdfViewer from "./components/PdfViewer";
 import PdfMerge from "./components/PdfMerge";
 import PdfSplit from "./components/PdfSplit";
+import PdfReorder from "./components/PdfReorder";
+import PdfMetadata from "./components/PdfMetadata";
 import DropZone from "./components/ui/DropZone";
 
 export default function App() {
@@ -66,12 +68,12 @@ export default function App() {
 
           <Show when={route() === "reorder"}>
             <h2 class="text-xl font-semibold mb-4">Reorder Pages</h2>
-            <p class="text-sm text-gray-500">Coming soon</p>
+            <PdfReorder />
           </Show>
 
           <Show when={route() === "metadata"}>
             <h2 class="text-xl font-semibold mb-4">Edit Metadata</h2>
-            <p class="text-sm text-gray-500">Coming soon</p>
+            <PdfMetadata />
           </Show>
         </div>
       </main>

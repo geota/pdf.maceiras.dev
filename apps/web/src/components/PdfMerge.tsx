@@ -1,44 +1,90 @@
-import { createSignal, For, Show } from "solid-js";
+import { createSignal, For, Show, onCleanup } from "solid-js";
+import {
+  DragDropProvider,
+  DragDropSensors,
+  SortableProvider,
+  createSortable,
+  closestCenter,
+  type DragEvent as DndDragEvent,
+} from "@thisbeyond/solid-dnd";
 import * as pdfWorker from "../pdf-worker-client";
+import DropZone from "./ui/DropZone";
+
+interface LoadedPdf {
+  id: string;
+  name: string;
+  handle: string;
+  pageCount: number;
+  thumbnail: ImageData | null;
+}
+
+let nextId = 0;
 
 export default function PdfMerge() {
-  const [files, setFiles] = createSignal<{ name: string; data: ArrayBuffer }[]>(
-    []
-  );
+  const [files, setFiles] = createSignal<LoadedPdf[]>([]);
   const [merging, setMerging] = createSignal(false);
   const [error, setError] = createSignal("");
 
-  async function handleFiles(e: Event) {
-    const input = e.target as HTMLInputElement;
-    if (!input.files) return;
-
-    const newFiles: { name: string; data: ArrayBuffer }[] = [];
-    for (const file of Array.from(input.files)) {
-      newFiles.push({ name: file.name, data: await file.arrayBuffer() });
+  onCleanup(() => {
+    for (const f of files()) {
+      pdfWorker.unloadDocument(f.handle);
     }
-    setFiles((prev) => [...prev, ...newFiles]);
-    input.value = "";
+  });
+
+  async function handleFiles(newFiles: File[]) {
+    setError("");
+    for (const file of newFiles) {
+      try {
+        const data = await file.arrayBuffer();
+        const { handle, pageCount } = await pdfWorker.loadDocument(data);
+
+        let thumbnail: ImageData | null = null;
+        try {
+          thumbnail = await pdfWorker.renderPage(handle, 0, 120);
+        } catch {
+          // thumbnail rendering is non-critical
+        }
+
+        const id = `merge_${nextId++}`;
+        setFiles((prev) => [...prev, { id, name: file.name, handle, pageCount, thumbnail }]);
+      } catch (err: any) {
+        setError(err.message || `Failed to load ${file.name}`);
+      }
+    }
   }
 
-  function removeFile(index: number) {
-    setFiles((prev) => prev.filter((_, i) => i !== index));
+  function removeFile(id: string) {
+    setFiles((prev) => {
+      const item = prev.find((f) => f.id === id);
+      if (item) pdfWorker.unloadDocument(item.handle);
+      return prev.filter((f) => f.id !== id);
+    });
+  }
+
+  function onDragEnd({ draggable, droppable }: DndDragEvent) {
+    if (!draggable || !droppable) return;
+    const fromId = draggable.id as string;
+    const toId = droppable.id as string;
+    if (fromId === toId) return;
+
+    setFiles((prev) => {
+      const items = [...prev];
+      const fromIdx = items.findIndex((f) => f.id === fromId);
+      const toIdx = items.findIndex((f) => f.id === toId);
+      if (fromIdx === -1 || toIdx === -1) return prev;
+      const [moved] = items.splice(fromIdx, 1);
+      items.splice(toIdx, 0, moved);
+      return items;
+    });
   }
 
   async function merge() {
-    if (files().length < 2) return;
+    const list = files();
+    if (list.length < 2) return;
     setMerging(true);
     setError("");
-
-    const handles: string[] = [];
     try {
-      // Load all documents into worker
-      for (const f of files()) {
-        const { handle } = await pdfWorker.loadDocument(f.data);
-        handles.push(handle);
-      }
-
-      const merged = await pdfWorker.mergePdfs(handles);
-
+      const merged = await pdfWorker.mergePdfs(list.map((f) => f.handle));
       const blob = new Blob([merged], { type: "application/pdf" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -49,59 +95,102 @@ export default function PdfMerge() {
     } catch (err: any) {
       setError(err.message || "Merge failed");
     } finally {
-      // Unload all documents
-      for (const h of handles) {
-        await pdfWorker.unloadDocument(h);
-      }
       setMerging(false);
     }
   }
 
   return (
     <div>
-      <h2 class="text-lg font-semibold mb-3">Merge PDFs</h2>
-
-      <input
-        type="file"
-        accept=".pdf"
-        multiple
-        onChange={handleFiles}
-        class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 mb-3"
-      />
+      <DropZone onFiles={handleFiles} accept=".pdf" multiple>
+        <p class="text-sm text-gray-500">
+          <span class="font-medium">Drop PDF files here</span> or click to
+          browse
+        </p>
+      </DropZone>
 
       <Show when={files().length > 0}>
-        <ul class="mb-3 space-y-1">
-          <For each={files()}>
-            {(file, i) => (
-              <li class="flex items-center gap-2 text-sm">
-                <span>
-                  {i() + 1}. {file.name}
-                </span>
-                <button
-                  onClick={() => removeFile(i())}
-                  class="text-red-500 hover:text-red-700 text-xs"
-                >
-                  remove
-                </button>
-              </li>
-            )}
-          </For>
-        </ul>
+        <DragDropProvider onDragEnd={onDragEnd} collisionDetector={closestCenter}>
+          <DragDropSensors />
+          <SortableProvider ids={files().map((f) => f.id)}>
+            <ul class="mt-4 space-y-2">
+              <For each={files()}>
+                {(file) => <SortableItem file={file} onRemove={removeFile} />}
+              </For>
+            </ul>
+          </SortableProvider>
+        </DragDropProvider>
 
-        <button
-          onClick={merge}
-          disabled={files().length < 2 || merging()}
-          class="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-50 text-sm"
-        >
-          {merging() ? "Merging..." : `Merge ${files().length} PDFs`}
-        </button>
+        <div class="mt-4 flex items-center gap-3">
+          <button
+            onClick={merge}
+            disabled={files().length < 2 || merging()}
+            class="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-50 text-sm font-medium"
+          >
+            {merging() ? "Merging..." : `Merge ${files().length} PDFs`}
+          </button>
+          <span class="text-xs text-gray-400">
+            Drag to reorder before merging
+          </span>
+        </div>
       </Show>
 
       <Show when={error()}>
-        <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mt-3 text-sm">
+        <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mt-4 text-sm">
           {error()}
         </div>
       </Show>
     </div>
+  );
+}
+
+function SortableItem(props: {
+  file: LoadedPdf;
+  onRemove: (id: string) => void;
+}) {
+  const sortable = createSortable(props.file.id);
+  let canvasRef: HTMLCanvasElement | undefined;
+
+  function renderThumb() {
+    const img = props.file.thumbnail;
+    if (!canvasRef || !img) return;
+    canvasRef.width = img.width;
+    canvasRef.height = img.height;
+    canvasRef.getContext("2d")!.putImageData(img, 0, 0);
+  }
+
+  return (
+    <li
+      ref={(el) => {
+        sortable(el);
+        requestAnimationFrame(renderThumb);
+      }}
+      class="flex items-center gap-3 bg-white border border-gray-200 rounded-lg p-3 shadow-sm cursor-grab active:cursor-grabbing"
+      classList={{ "opacity-50": sortable.isActiveDraggable }}
+    >
+      <Show
+        when={props.file.thumbnail}
+        fallback={<div class="w-10 h-14 bg-gray-100 rounded shrink-0" />}
+      >
+        <canvas
+          ref={(el) => {
+            canvasRef = el;
+            requestAnimationFrame(renderThumb);
+          }}
+          class="w-10 h-auto rounded shrink-0"
+        />
+      </Show>
+      <div class="flex-1 min-w-0">
+        <p class="text-sm font-medium truncate">{props.file.name}</p>
+        <p class="text-xs text-gray-400">
+          {props.file.pageCount} page{props.file.pageCount !== 1 ? "s" : ""}
+        </p>
+      </div>
+      <button
+        onClick={() => props.onRemove(props.file.id)}
+        class="text-red-400 hover:text-red-600 text-sm shrink-0"
+      >
+        Remove
+      </button>
+    </li>
   );
 }

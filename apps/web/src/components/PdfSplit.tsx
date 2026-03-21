@@ -1,84 +1,118 @@
-import { createSignal, onCleanup, Show } from "solid-js";
+import { createSignal, createMemo, onCleanup, Show } from "solid-js";
 import * as pdfWorker from "../pdf-worker-client";
+import DropZone from "./ui/DropZone";
+import ThumbnailGrid from "./ui/ThumbnailGrid";
+import { useThumbnails } from "../hooks/useThumbnails";
+import { useSelection } from "../hooks/useSelection";
 
 export default function PdfSplit() {
-  const [file, setFile] = createSignal<{
-    name: string;
-    handle: string;
-    pageCount: number;
-  } | null>(null);
-  const [rangeInput, setRangeInput] = createSignal("1-1");
+  const [handle, setHandle] = createSignal<string | null>(null);
+  const [fileName, setFileName] = createSignal("");
+  const [pageCount, setPageCount] = createSignal(0);
   const [splitting, setSplitting] = createSignal(false);
   const [error, setError] = createSignal("");
-  const [loading, setLoading] = createSignal(false);
+
+  const { thumbnails, loading: thumbsLoading, loadAll } = useThumbnails(handle, pageCount);
+  const { selected, handleSelect, selectAll, clearSelection } = useSelection();
 
   onCleanup(() => {
-    const f = file();
-    if (f) pdfWorker.unloadDocument(f.handle);
+    const h = handle();
+    if (h) pdfWorker.unloadDocument(h);
   });
 
-  async function handleFile(e: Event) {
-    const input = e.target as HTMLInputElement;
-    const f = input.files?.[0];
-    if (!f) return;
+  async function handleFiles(files: File[]) {
+    const file = files[0];
+    if (!file) return;
 
-    // Unload previous document
-    const prev = file();
-    if (prev) await pdfWorker.unloadDocument(prev.handle);
+    const prev = handle();
+    if (prev) pdfWorker.unloadDocument(prev);
 
     setError("");
-    setLoading(true);
+    setFileName(file.name);
+    clearSelection();
+
     try {
-      const data = await f.arrayBuffer();
-      const { handle, pageCount } = await pdfWorker.loadDocument(data);
-      setFile({ name: f.name, handle, pageCount });
-      setRangeInput(`1-${pageCount}`);
+      const data = await file.arrayBuffer();
+      const result = await pdfWorker.loadDocument(data);
+      setHandle(result.handle);
+      setPageCount(result.pageCount);
+      loadAll();
     } catch (err: any) {
       setError(err.message || "Failed to load PDF");
-    } finally {
-      setLoading(false);
     }
   }
 
-  function parseRanges(
-    input: string,
-    maxPage: number
-  ): { start: number; end: number }[] | null {
+  const selectedRanges = createMemo(() => {
+    const pages = [...selected()].sort((a, b) => a - b);
+    if (pages.length === 0) return [];
+
     const ranges: { start: number; end: number }[] = [];
-    for (const part of input.split(",")) {
-      const trimmed = part.trim();
-      if (!trimmed) continue;
-      const match = trimmed.match(/^(\d+)(?:-(\d+))?$/);
-      if (!match) return null;
-      const start = parseInt(match[1], 10);
-      const end = match[2] ? parseInt(match[2], 10) : start;
-      if (start < 1 || end < start || end > maxPage) return null;
-      // Convert to 0-indexed, exclusive end
-      ranges.push({ start: start - 1, end });
-    }
-    return ranges.length > 0 ? ranges : null;
-  }
+    let start = pages[0];
+    let end = pages[0];
 
-  async function split() {
-    const f = file();
-    if (!f) return;
-
-    const ranges = parseRanges(rangeInput(), f.pageCount);
-    if (!ranges) {
-      setError("Invalid range format. Use e.g. 1-3,5,7-10");
-      return;
+    for (let i = 1; i < pages.length; i++) {
+      if (pages[i] === end + 1) {
+        end = pages[i];
+      } else {
+        ranges.push({ start, end: end + 1 });
+        start = pages[i];
+        end = pages[i];
+      }
     }
+    ranges.push({ start, end: end + 1 });
+    return ranges;
+  });
+
+  const rangeLabel = createMemo(() =>
+    selectedRanges()
+      .map((r) =>
+        r.end - r.start === 1 ? `${r.start + 1}` : `${r.start + 1}-${r.end}`
+      )
+      .join(", ")
+  );
+
+  async function splitSelected() {
+    const h = handle();
+    const ranges = selectedRanges();
+    if (!h || ranges.length === 0) return;
 
     setSplitting(true);
     setError("");
     try {
-      const parts = await pdfWorker.splitPdf(f.handle, ranges);
+      // Single range containing all selected pages
+      const allPages = [...selected()].sort((a, b) => a - b);
+      const singleRange = [{ start: allPages[0], end: allPages[allPages.length - 1] + 1 }];
+      const parts = await pdfWorker.splitPdf(h, singleRange);
+      const baseName = fileName().replace(/\.pdf$/i, "");
+      const blob = new Blob([parts[0]], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${baseName}_extract.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setError(err.message || "Split failed");
+    } finally {
+      setSplitting(false);
+    }
+  }
+
+  async function splitByRanges() {
+    const h = handle();
+    const ranges = selectedRanges();
+    if (!h || ranges.length === 0) return;
+
+    setSplitting(true);
+    setError("");
+    try {
+      const parts = await pdfWorker.splitPdf(h, ranges);
+      const baseName = fileName().replace(/\.pdf$/i, "");
       parts.forEach((part: ArrayBuffer, i: number) => {
         const blob = new Blob([part], { type: "application/pdf" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        const baseName = f.name.replace(/\.pdf$/i, "");
         a.download = `${baseName}_part${i + 1}.pdf`;
         a.click();
         URL.revokeObjectURL(url);
@@ -92,48 +126,77 @@ export default function PdfSplit() {
 
   return (
     <div>
-      <h2 class="text-lg font-semibold mb-3">Split PDF</h2>
+      <DropZone onFiles={handleFiles} accept=".pdf">
+        <p class="text-sm text-gray-500">
+          <span class="font-medium">Drop a PDF here</span> or click to browse
+        </p>
+      </DropZone>
 
-      <input
-        type="file"
-        accept=".pdf"
-        onChange={handleFile}
-        class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 mb-3"
-      />
-
-      <Show when={loading()}>
-        <p class="text-sm text-gray-400">Loading PDF...</p>
-      </Show>
-
-      <Show when={file()}>
-        {(f) => (
-          <div>
-            <p class="text-sm text-gray-600 mb-2">
-              {f().name} — {f().pageCount} page{f().pageCount > 1 ? "s" : ""}
+      <Show when={handle()}>
+        <div class="mt-4">
+          <div class="flex items-center justify-between mb-3">
+            <p class="text-sm text-gray-600">
+              {fileName()} — {pageCount()} pages
+              {thumbsLoading() ? " (loading thumbnails...)" : ""}
             </p>
-            <label class="block text-sm mb-1">
-              Page ranges (e.g. 1-3,5,7-10):
-            </label>
-            <input
-              type="text"
-              value={rangeInput()}
-              onInput={(e) => setRangeInput(e.currentTarget.value)}
-              class="border rounded px-3 py-1 text-sm w-64 mb-3"
-            />
-            <br />
-            <button
-              onClick={split}
-              disabled={splitting()}
-              class="px-4 py-2 bg-green-600 text-white rounded disabled:opacity-50 text-sm"
-            >
-              {splitting() ? "Splitting..." : "Split"}
-            </button>
+            <div class="flex gap-2">
+              <button
+                onClick={() => selectAll(pageCount())}
+                class="text-xs text-blue-600 hover:underline"
+              >
+                Select all
+              </button>
+              <button
+                onClick={clearSelection}
+                class="text-xs text-gray-500 hover:underline"
+              >
+                Clear
+              </button>
+            </div>
           </div>
-        )}
+
+          <p class="text-xs text-gray-400 mb-3">
+            Click to select pages. Shift+click for range. Cmd/Ctrl+click to toggle.
+          </p>
+
+          <ThumbnailGrid
+            pageCount={pageCount()}
+            thumbnails={thumbnails()}
+            selectedPages={selected()}
+            onPageClick={handleSelect}
+          />
+
+          <Show when={selected().size > 0}>
+            <div class="mt-4 p-3 bg-gray-50 rounded-lg border">
+              <p class="text-sm mb-2">
+                Selected: <span class="font-medium">{rangeLabel()}</span>{" "}
+                ({selected().size} page{selected().size !== 1 ? "s" : ""})
+              </p>
+              <div class="flex gap-2">
+                <button
+                  onClick={splitSelected}
+                  disabled={splitting()}
+                  class="px-4 py-2 bg-green-600 text-white rounded disabled:opacity-50 text-sm font-medium"
+                >
+                  {splitting() ? "Splitting..." : "Extract as one PDF"}
+                </button>
+                <Show when={selectedRanges().length > 1}>
+                  <button
+                    onClick={splitByRanges}
+                    disabled={splitting()}
+                    class="px-4 py-2 bg-green-600 text-white rounded disabled:opacity-50 text-sm font-medium"
+                  >
+                    Split into {selectedRanges().length} PDFs
+                  </button>
+                </Show>
+              </div>
+            </div>
+          </Show>
+        </div>
       </Show>
 
       <Show when={error()}>
-        <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mt-3 text-sm">
+        <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mt-4 text-sm">
           {error()}
         </div>
       </Show>
