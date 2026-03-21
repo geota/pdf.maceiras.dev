@@ -35,6 +35,36 @@ pub fn split_pdf(data: &[u8], ranges: JsValue) -> Result<JsValue, JsError> {
     Ok(arr.into())
 }
 
+#[wasm_bindgen(js_name = "reorderPages")]
+pub fn reorder_pages(data: &[u8], page_order: Vec<u32>) -> Result<Vec<u8>, JsError> {
+    pdf_core::reorder::reorder_pages(data, &page_order)
+        .map_err(|e| JsError::new(&e.to_string()))
+}
+
+#[wasm_bindgen(js_name = "getMetadata")]
+pub fn get_metadata(data: &[u8]) -> Result<JsValue, JsError> {
+    let doc =
+        pdf_core::PdfDocument::from_bytes(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let meta = doc.metadata();
+    serde_wasm_bindgen::to_value(&meta).map_err(|e| JsError::new(&e.to_string()))
+}
+
+#[wasm_bindgen(js_name = "setMetadata")]
+pub fn set_metadata(data: &[u8], metadata: JsValue) -> Result<Vec<u8>, JsError> {
+    let meta: pdf_core::PdfMetadata =
+        serde_wasm_bindgen::from_value(metadata).map_err(|e| JsError::new(&e.to_string()))?;
+    let mut doc =
+        pdf_core::PdfDocument::from_bytes(data).map_err(|e| JsError::new(&e.to_string()))?;
+    doc.set_metadata(
+        meta.title.as_deref(),
+        meta.author.as_deref(),
+        meta.subject.as_deref(),
+        meta.keywords.as_deref(),
+    )
+    .map_err(|e| JsError::new(&e.to_string()))?;
+    doc.to_bytes().map_err(|e| JsError::new(&e.to_string()))
+}
+
 // --- PDF Rendering (pdfium-render) ---
 
 #[wasm_bindgen(js_name = "getPageCount")]

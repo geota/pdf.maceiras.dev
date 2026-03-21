@@ -45,3 +45,51 @@ fn roundtrip_preserves_pages() {
     let doc2 = PdfDocument::from_bytes(&output).unwrap();
     assert_eq!(doc2.page_count(), 4);
 }
+
+#[test]
+fn set_and_read_metadata() {
+    let data = helpers::make_test_pdf(1);
+    let mut doc = PdfDocument::from_bytes(&data).unwrap();
+    doc.set_metadata(
+        Some("Test Title"),
+        Some("Test Author"),
+        Some("Test Subject"),
+        Some("rust, pdf"),
+    )
+    .unwrap();
+
+    let output = doc.to_bytes().unwrap();
+    let doc2 = PdfDocument::from_bytes(&output).unwrap();
+    let meta = doc2.metadata();
+
+    assert_eq!(meta.title.as_deref(), Some("Test Title"));
+    assert_eq!(meta.author.as_deref(), Some("Test Author"));
+    assert_eq!(meta.subject.as_deref(), Some("Test Subject"));
+    assert_eq!(meta.keywords.as_deref(), Some("rust, pdf"));
+}
+
+#[test]
+fn set_metadata_partial_update() {
+    let data = helpers::make_test_pdf(1);
+    let mut doc = PdfDocument::from_bytes(&data).unwrap();
+    doc.set_metadata(Some("First"), None, None, None).unwrap();
+    doc.set_metadata(None, Some("Author"), None, None).unwrap();
+
+    let output = doc.to_bytes().unwrap();
+    let doc2 = PdfDocument::from_bytes(&output).unwrap();
+    let meta = doc2.metadata();
+
+    assert_eq!(meta.title.as_deref(), Some("First"));
+    assert_eq!(meta.author.as_deref(), Some("Author"));
+}
+
+#[test]
+fn metadata_defaults_to_none() {
+    let data = helpers::make_test_pdf(1);
+    let doc = PdfDocument::from_bytes(&data).unwrap();
+    let meta = doc.metadata();
+    assert!(meta.title.is_none());
+    assert!(meta.author.is_none());
+    assert!(meta.subject.is_none());
+    assert!(meta.keywords.is_none());
+}

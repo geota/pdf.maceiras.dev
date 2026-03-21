@@ -114,6 +114,50 @@ const workerApi = {
     const buffers = parts.map((p: Uint8Array) => p.buffer as ArrayBuffer);
     return Comlink.transfer(buffers, buffers);
   },
+
+  /** Reorder pages in a loaded document. Returns new PDF as ArrayBuffer. */
+  async reorderPages(
+    handle: string,
+    pageOrder: number[]
+  ): Promise<ArrayBuffer> {
+    await initialize();
+    const result: Uint8Array = api!.reorderPages(
+      getDoc(handle),
+      new Uint32Array(pageOrder)
+    );
+    const buf = result.buffer as ArrayBuffer;
+    return Comlink.transfer(buf, [buf]);
+  },
+
+  /** Get metadata from a loaded document. */
+  async getMetadata(
+    handle: string
+  ): Promise<{
+    pageCount: number;
+    title: string | null;
+    author: string | null;
+    subject: string | null;
+    keywords: string | null;
+  }> {
+    await initialize();
+    return api!.getMetadata(getDoc(handle));
+  },
+
+  /** Set metadata on a loaded document. Returns new PDF as ArrayBuffer. */
+  async setMetadata(
+    handle: string,
+    metadata: {
+      title?: string | null;
+      author?: string | null;
+      subject?: string | null;
+      keywords?: string | null;
+    }
+  ): Promise<ArrayBuffer> {
+    await initialize();
+    const result: Uint8Array = api!.setMetadata(getDoc(handle), metadata);
+    const buf = result.buffer as ArrayBuffer;
+    return Comlink.transfer(buf, [buf]);
+  },
 };
 
 export type WorkerApi = typeof workerApi;

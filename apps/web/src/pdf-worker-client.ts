@@ -18,3 +18,6 @@ export const renderPage = api.renderPage;
 export const getPageDimensions = api.getPageDimensions;
 export const mergePdfs = api.mergePdfs;
 export const splitPdf = api.splitPdf;
+export const reorderPages = api.reorderPages;
+export const getMetadata = api.getMetadata;
+export const setMetadata = api.setMetadata;

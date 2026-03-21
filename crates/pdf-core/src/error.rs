@@ -14,6 +14,9 @@ pub enum PdfError {
     #[error("split failed: {0}")]
     SplitFailed(String),
 
+    #[error("reorder failed: {0}")]
+    ReorderFailed(String),
+
     #[error("empty input: at least one PDF is required")]
     EmptyInput,
 

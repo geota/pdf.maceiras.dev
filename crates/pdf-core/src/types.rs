@@ -22,9 +22,11 @@ impl PageRange {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PdfMetadata {
     pub page_count: u32,
     pub title: Option<String>,
     pub author: Option<String>,
+    pub subject: Option<String>,
+    pub keywords: Option<String>,
 }
