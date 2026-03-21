@@ -71,9 +71,13 @@ export default function App() {
               </div>
             </Show>
 
-            <Show when={pdfData()}>
-              <p class="text-sm text-gray-500 mb-3">{fileName()}</p>
-              <PdfViewer pdfData={pdfData()!} />
+            <Show when={pdfData()} keyed>
+              {(data) => (
+                <>
+                  <p class="text-sm text-gray-500 mb-3">{fileName()}</p>
+                  <PdfViewer pdfData={data} />
+                </>
+              )}
             </Show>
           </Show>
 
