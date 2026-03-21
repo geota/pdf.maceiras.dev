@@ -909,6 +909,59 @@ wasm-bindgen-test = "0.3"
 
 ---
 
+## 14. Implementation Progress Tracker
+
+### Spike (Complete)
+
+| # | Milestone | Status |
+|---|-----------|--------|
+| 1 | Project scaffold | Done |
+| 2 | pdf-core: read/write | Done |
+| 3 | pdf-core: merge | Done |
+| 4 | pdf-core: split | Done |
+| 5 | pdf-wasm bindings | Done |
+| 6 | Web Worker layer (Comlink + handles) | Done |
+| 7 | Web app: viewer (pdfium-render) | Done |
+| 8 | Web app: merge tool (basic) | Done |
+| 9 | Web app: split tool (basic) | Done |
+
+### Phase A: Foundation (Pure Frontend)
+
+| # | Task | Status |
+|---|------|--------|
+| A1 | Reusable DropZone component | Not started |
+| A2 | Thumbnail rendering (hooks + components) | Not started |
+| A3 | Multi-select hook (useSelection) | Not started |
+| A4 | App layout redesign (tabs → sidebar) | Not started |
+
+### Phase B: Rust Backend Extensions
+
+| # | Task | Status |
+|---|------|--------|
+| B1 | Extract shared page_utils from merge.rs | Not started |
+| B2 | Page reordering (reorder.rs + WASM + worker) | Not started |
+| B3 | Metadata editing (read/write + WASM + worker) | Not started |
+
+### Phase C: Rich UI Features
+
+| # | Task | Status |
+|---|------|--------|
+| C1 | Better merge UI (DropZone + sortable list + thumbnails) | Not started |
+| C2 | Better split UI (ThumbnailGrid + visual page selection) | Not started |
+| C3 | Page reorder tool (draggable thumbnails + multi-select) | Not started |
+| C4 | Metadata editor (form + save) | Not started |
+| C5 | Enhance PdfViewer (DropZone + thumbnail strip) | Not started |
+
+### Phase D: Polish & Deploy
+
+| # | Task | Status |
+|---|------|--------|
+| D1 | Production build config | Not started |
+| D2 | Deployment config (COOP/COEP headers) | Not started |
+| D3 | Error handling & edge cases | Not started |
+
+---
+
 ## Appendix A: Alternative Rendering Approaches (Future)
 
 If you want to eliminate the pdf.js dependency later:

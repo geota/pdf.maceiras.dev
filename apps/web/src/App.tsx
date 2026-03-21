@@ -1,95 +1,80 @@
 import { createSignal, Show } from "solid-js";
+import Sidebar, { type Route } from "./components/ui/Sidebar";
 import PdfViewer from "./components/PdfViewer";
 import PdfMerge from "./components/PdfMerge";
 import PdfSplit from "./components/PdfSplit";
-
-type Tab = "view" | "merge" | "split";
+import DropZone from "./components/ui/DropZone";
 
 export default function App() {
-  const [tab, setTab] = createSignal<Tab>("view");
+  const [route, setRoute] = createSignal<Route>("view");
   const [pdfData, setPdfData] = createSignal<ArrayBuffer | null>(null);
-  const [fileName, setFileName] = createSignal<string>("");
-  const [error, setError] = createSignal<string>("");
+  const [fileName, setFileName] = createSignal("");
+  const [error, setError] = createSignal("");
 
-  async function handleFile(e: Event) {
-    const input = e.target as HTMLInputElement;
-    const file = input.files?.[0];
+  async function handleFiles(files: File[]) {
+    const file = files[0];
     if (!file) return;
-
     setError("");
     setFileName(file.name);
-
     try {
-      const data = await file.arrayBuffer();
-      setPdfData(data);
+      setPdfData(await file.arrayBuffer());
     } catch (err: any) {
       setError(err.message || "Failed to read file");
     }
   }
 
-  const tabClass = (t: Tab) =>
-    `px-4 py-2 text-sm font-medium rounded-t ${
-      tab() === t
-        ? "bg-white text-blue-700 border border-b-0 border-gray-300"
-        : "bg-gray-200 text-gray-600 hover:bg-gray-300"
-    }`;
-
   return (
-    <div class="min-h-screen bg-gray-100 p-8">
-      <div class="max-w-4xl mx-auto">
-        <h1 class="text-2xl font-bold mb-6">pdf-rs spike</h1>
+    <div class="flex h-screen bg-gray-100">
+      <Sidebar active={route()} onNavigate={setRoute} />
 
-        <div class="flex gap-1 mb-0">
-          <button class={tabClass("view")} onClick={() => setTab("view")}>
-            View
-          </button>
-          <button class={tabClass("merge")} onClick={() => setTab("merge")}>
-            Merge
-          </button>
-          <button class={tabClass("split")} onClick={() => setTab("split")}>
-            Split
-          </button>
-        </div>
-
-        <div class="bg-white rounded-b-lg rounded-tr-lg shadow p-6">
-          <Show when={tab() === "view"}>
-            <div class="mb-4">
-              <label class="block text-sm font-medium mb-2">
-                Open a PDF file
-              </label>
-              <input
-                type="file"
-                accept=".pdf"
-                onChange={handleFile}
-                class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-              />
-            </div>
+      <main class="flex-1 overflow-auto p-6">
+        <div class="max-w-5xl mx-auto">
+          <Show when={route() === "view"}>
+            <h2 class="text-xl font-semibold mb-4">View PDF</h2>
+            <DropZone onFiles={handleFiles} accept=".pdf">
+              <p class="text-sm text-gray-500">
+                <span class="font-medium">Drop a PDF here</span> or click to
+                browse
+              </p>
+            </DropZone>
 
             <Show when={error()}>
-              <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
+              <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mt-4">
                 {error()}
               </div>
             </Show>
 
             <Show when={pdfData()} keyed>
               {(data) => (
-                <>
+                <div class="mt-4 bg-white rounded-lg shadow p-4">
                   <p class="text-sm text-gray-500 mb-3">{fileName()}</p>
                   <PdfViewer pdfData={data} />
-                </>
+                </div>
               )}
             </Show>
           </Show>
 
-          <Show when={tab() === "merge"}>
+          <Show when={route() === "merge"}>
+            <h2 class="text-xl font-semibold mb-4">Merge PDFs</h2>
             <PdfMerge />
           </Show>
 
-          <Show when={tab() === "split"}>
+          <Show when={route() === "split"}>
+            <h2 class="text-xl font-semibold mb-4">Split PDF</h2>
             <PdfSplit />
           </Show>
+
+          <Show when={route() === "reorder"}>
+            <h2 class="text-xl font-semibold mb-4">Reorder Pages</h2>
+            <p class="text-sm text-gray-500">Coming soon</p>
+          </Show>
+
+          <Show when={route() === "metadata"}>
+            <h2 class="text-xl font-semibold mb-4">Edit Metadata</h2>
+            <p class="text-sm text-gray-500">Coming soon</p>
+          </Show>
         </div>
-      </div>
+      </main>
     </div>
   );
 }
