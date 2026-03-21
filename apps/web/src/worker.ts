@@ -1,4 +1,7 @@
 /// PDF Module Worker — loads PDFium + Rust WASM modules via ESM imports.
+/// Exposes API via Comlink.
+
+import * as Comlink from "comlink";
 
 let initialized = false;
 let api: typeof import("../../../packages/pdf-wasm-pkg/pdf_wasm") | null =
@@ -7,37 +10,26 @@ let api: typeof import("../../../packages/pdf-wasm-pkg/pdf_wasm") | null =
 async function initialize() {
   if (initialized) return;
 
-  // Step 1: Load PDFium Emscripten module (paulocoutinhox ESM build)
   console.log("[pdf-worker] Loading PDFium...");
-
-  // Import the ESM build of PDFium from src/lib (not public/).
-  // Fetch pdfium.wasm ourselves and pass as wasmBinary to avoid Emscripten's
-  // locateFile/fetch which gets confused by Vite's module transforms.
   const { default: PDFiumFactory } = await import("./lib/pdfium.js");
   const wasmResponse = await fetch("/pdfium.wasm");
   const wasmBinary = await wasmResponse.arrayBuffer();
-  const pdfiumModule = await PDFiumFactory({
-    wasmBinary,
-  });
+  const pdfiumModule = await PDFiumFactory({ wasmBinary });
   console.log(
     "[pdf-worker] PDFium loaded. Has ccall:",
     typeof pdfiumModule.ccall === "function"
   );
 
-  // Step 2: Load Rust WASM module (ESM, --target web)
   console.log("[pdf-worker] Loading Rust WASM module...");
   const wasmModule = await import(
     "../../../packages/pdf-wasm-pkg/pdf_wasm.js"
   );
   const wasmExports = await wasmModule.default();
 
-  // Step 3: Initialize pdfium-render binding
-  // First arg: Emscripten Module (has _malloc, _free, ccall, HEAPU8, wasmExports)
-  // Second arg: wasm-bindgen exports (has __wbindgen_* helpers)
   const success = wasmModule.initialize_pdfium_render(
     pdfiumModule,
     wasmExports,
-    true // debug=true for the spike
+    true
   );
 
   if (!success) {
@@ -49,66 +41,53 @@ async function initialize() {
   console.log("[pdf-worker] Initialized successfully");
 }
 
-// Message handler
-self.onmessage = async (e: MessageEvent) => {
-  const { id, method, args } = e.data;
-
-  try {
+const workerApi = {
+  async ping(): Promise<string> {
     await initialize();
-    if (!api) throw new Error("Not initialized");
+    return "pong";
+  },
 
-    let result: any;
+  async getPageCount(data: ArrayBuffer): Promise<number> {
+    await initialize();
+    return api!.getPageCount(new Uint8Array(data));
+  },
 
-    switch (method) {
-      case "getPageCount": {
-        const data = new Uint8Array(args[0]);
-        result = api.getPageCount(data);
-        break;
-      }
-      case "renderPage": {
-        const data = new Uint8Array(args[0]);
-        const pageIndex = args[1] as number;
-        const width = args[2] as number;
-        result = api.renderPage(data, pageIndex, width);
-        break;
-      }
-      case "getPageDimensions": {
-        const data = new Uint8Array(args[0]);
-        const pageIndex = args[1] as number;
-        result = api.getPageDimensions(data, pageIndex);
-        break;
-      }
-      case "mergePdfs": {
-        const pdfs = (args[0] as ArrayBuffer[]).map(
-          (buf) => new Uint8Array(buf)
-        );
-        const merged: Uint8Array = api.mergePdfs(pdfs);
-        result = merged.buffer;
-        (self as any).postMessage({ id, result }, [result]);
-        return;
-      }
-      case "splitPdf": {
-        const data = new Uint8Array(args[0]);
-        const ranges = args[1];
-        const parts: Uint8Array[] = api.splitPdf(data, ranges);
-        // Convert Uint8Arrays to ArrayBuffers for postMessage transfer
-        const buffers = parts.map((p: Uint8Array) => p.buffer);
-        (self as any).postMessage({ id, result: buffers }, buffers);
-        return;
-      }
-      case "ping": {
-        result = "pong";
-        break;
-      }
-      default:
-        throw new Error(`Unknown method: ${method}`);
-    }
+  async renderPage(
+    data: ArrayBuffer,
+    pageIndex: number,
+    width: number
+  ): Promise<ImageData> {
+    await initialize();
+    return api!.renderPage(new Uint8Array(data), pageIndex, width);
+  },
 
-    (self as any).postMessage({ id, result });
-  } catch (err: any) {
-    (self as any).postMessage({
-      id,
-      error: err.message || String(err),
-    });
-  }
+  async getPageDimensions(
+    data: ArrayBuffer,
+    pageIndex: number
+  ): Promise<[number, number]> {
+    await initialize();
+    return api!.getPageDimensions(new Uint8Array(data), pageIndex);
+  },
+
+  async mergePdfs(pdfs: ArrayBuffer[]): Promise<ArrayBuffer> {
+    await initialize();
+    const arrays = pdfs.map((buf) => new Uint8Array(buf));
+    const merged: Uint8Array = api!.mergePdfs(arrays);
+    const buf = merged.buffer as ArrayBuffer;
+    return Comlink.transfer(buf, [buf]);
+  },
+
+  async splitPdf(
+    data: ArrayBuffer,
+    ranges: { start: number; end: number }[]
+  ): Promise<ArrayBuffer[]> {
+    await initialize();
+    const parts: Uint8Array[] = api!.splitPdf(new Uint8Array(data), ranges);
+    const buffers = parts.map((p: Uint8Array) => p.buffer as ArrayBuffer);
+    return Comlink.transfer(buffers, buffers);
+  },
 };
+
+export type WorkerApi = typeof workerApi;
+
+Comlink.expose(workerApi);
