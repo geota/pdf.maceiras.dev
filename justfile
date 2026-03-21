@@ -43,3 +43,7 @@ build: wasm
 check:
     cargo fmt --check
     cargo clippy -- -D warnings
+
+# Preview production build locally
+preview: build
+    cd apps/web && pnpm preview

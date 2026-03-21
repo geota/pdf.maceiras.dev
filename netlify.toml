@@ -1,0 +1,9 @@
+[build]
+  command = "pnpm install && wasm-pack build crates/pdf-wasm --target web --out-dir ../../packages/pdf-wasm-pkg && cd apps/web && pnpm build"
+  publish = "apps/web/dist"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Cross-Origin-Opener-Policy = "same-origin"
+    Cross-Origin-Embedder-Policy = "require-corp"

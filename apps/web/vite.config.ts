@@ -4,14 +4,22 @@ import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
   plugins: [solid(), tailwindcss()],
+  build: {
+    target: "esnext",
+  },
   server: {
     headers: {
       "Cross-Origin-Opener-Policy": "same-origin",
       "Cross-Origin-Embedder-Policy": "require-corp",
     },
   },
+  preview: {
+    headers: {
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Cross-Origin-Embedder-Policy": "require-corp",
+    },
+  },
   optimizeDeps: {
-    // Don't try to pre-bundle our WASM package
     exclude: ["pdf-wasm-pkg"],
   },
   worker: {

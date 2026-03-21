@@ -929,35 +929,35 @@ wasm-bindgen-test = "0.3"
 
 | # | Task | Status |
 |---|------|--------|
-| A1 | Reusable DropZone component | Not started |
-| A2 | Thumbnail rendering (hooks + components) | Not started |
-| A3 | Multi-select hook (useSelection) | Not started |
-| A4 | App layout redesign (tabs → sidebar) | Not started |
+| A1 | Reusable DropZone component | Done |
+| A2 | Thumbnail rendering (hooks + components) | Done |
+| A3 | Multi-select hook (useSelection) | Done |
+| A4 | App layout redesign (tabs → sidebar) | Done |
 
 ### Phase B: Rust Backend Extensions
 
 | # | Task | Status |
 |---|------|--------|
-| B1 | Extract shared page_utils from merge.rs | Not started |
-| B2 | Page reordering (reorder.rs + WASM + worker) | Not started |
-| B3 | Metadata editing (read/write + WASM + worker) | Not started |
+| B1 | Extract shared page_utils from merge.rs | Done |
+| B2 | Page reordering (reorder.rs + WASM + worker) | Done |
+| B3 | Metadata editing (read/write + WASM + worker) | Done |
 
 ### Phase C: Rich UI Features
 
 | # | Task | Status |
 |---|------|--------|
-| C1 | Better merge UI (DropZone + sortable list + thumbnails) | Not started |
-| C2 | Better split UI (ThumbnailGrid + visual page selection) | Not started |
-| C3 | Page reorder tool (draggable thumbnails + multi-select) | Not started |
-| C4 | Metadata editor (form + save) | Not started |
-| C5 | Enhance PdfViewer (DropZone + thumbnail strip) | Not started |
+| C1 | Better merge UI (DropZone + sortable list + thumbnails) | Done |
+| C2 | Better split UI (ThumbnailGrid + visual page selection) | Done |
+| C3 | Page reorder tool (draggable thumbnails + multi-select) | Done |
+| C4 | Metadata editor (form + save) | Done |
+| C5 | Enhance PdfViewer (DropZone + thumbnail strip) | Done |
 
 ### Phase D: Polish & Deploy
 
 | # | Task | Status |
 |---|------|--------|
-| D1 | Production build config | Not started |
-| D2 | Deployment config (COOP/COEP headers) | Not started |
+| D1 | Production build config | Done |
+| D2 | Deployment config (COOP/COEP headers) | Done |
 | D3 | Error handling & edge cases | Not started |
 
 ---
