@@ -1,5 +1,6 @@
 /// PDF Module Worker — loads PDFium + Rust WASM modules via ESM imports.
-/// Exposes API via Comlink.
+/// Documents are loaded once into worker memory via handles to avoid
+/// re-transferring bytes on every operation.
 
 import * as Comlink from "comlink";
 
@@ -41,48 +42,75 @@ async function initialize() {
   console.log("[pdf-worker] Initialized successfully");
 }
 
+// --- Document cache ---
+let nextHandle = 0;
+const documents = new Map<string, Uint8Array>();
+
+function getDoc(handle: string): Uint8Array {
+  const doc = documents.get(handle);
+  if (!doc) throw new Error(`Unknown document handle: ${handle}`);
+  return doc;
+}
+
 const workerApi = {
   async ping(): Promise<string> {
     await initialize();
     return "pong";
   },
 
-  async getPageCount(data: ArrayBuffer): Promise<number> {
+  /** Load PDF bytes into worker memory, return a handle. */
+  async loadDocument(data: ArrayBuffer): Promise<{ handle: string; pageCount: number }> {
     await initialize();
-    return api!.getPageCount(new Uint8Array(data));
+    const bytes = new Uint8Array(data);
+    const handle = `doc_${nextHandle++}`;
+    documents.set(handle, bytes);
+    const pageCount = api!.getPageCount(bytes);
+    return { handle, pageCount };
+  },
+
+  /** Free a loaded document from worker memory. */
+  async unloadDocument(handle: string): Promise<void> {
+    documents.delete(handle);
+  },
+
+  async getPageCount(handle: string): Promise<number> {
+    await initialize();
+    return api!.getPageCount(getDoc(handle));
   },
 
   async renderPage(
-    data: ArrayBuffer,
+    handle: string,
     pageIndex: number,
     width: number
   ): Promise<ImageData> {
     await initialize();
-    return api!.renderPage(new Uint8Array(data), pageIndex, width);
+    return api!.renderPage(getDoc(handle), pageIndex, width);
   },
 
   async getPageDimensions(
-    data: ArrayBuffer,
+    handle: string,
     pageIndex: number
   ): Promise<[number, number]> {
     await initialize();
-    return api!.getPageDimensions(new Uint8Array(data), pageIndex);
+    return api!.getPageDimensions(getDoc(handle), pageIndex);
   },
 
-  async mergePdfs(pdfs: ArrayBuffer[]): Promise<ArrayBuffer> {
+  /** Merge multiple loaded documents. Returns merged PDF as ArrayBuffer. */
+  async mergePdfs(handles: string[]): Promise<ArrayBuffer> {
     await initialize();
-    const arrays = pdfs.map((buf) => new Uint8Array(buf));
+    const arrays = handles.map((h) => getDoc(h));
     const merged: Uint8Array = api!.mergePdfs(arrays);
     const buf = merged.buffer as ArrayBuffer;
     return Comlink.transfer(buf, [buf]);
   },
 
+  /** Split a loaded document by page ranges. Returns ArrayBuffer per range. */
   async splitPdf(
-    data: ArrayBuffer,
+    handle: string,
     ranges: { start: number; end: number }[]
   ): Promise<ArrayBuffer[]> {
     await initialize();
-    const parts: Uint8Array[] = api!.splitPdf(new Uint8Array(data), ranges);
+    const parts: Uint8Array[] = api!.splitPdf(getDoc(handle), ranges);
     const buffers = parts.map((p: Uint8Array) => p.buffer as ArrayBuffer);
     return Comlink.transfer(buffers, buffers);
   },

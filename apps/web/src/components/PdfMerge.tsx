@@ -28,9 +28,17 @@ export default function PdfMerge() {
     if (files().length < 2) return;
     setMerging(true);
     setError("");
+
+    const handles: string[] = [];
     try {
-      const merged = await pdfWorker.mergePdfs(files().map((f) => f.data));
-      // Download the merged PDF
+      // Load all documents into worker
+      for (const f of files()) {
+        const { handle } = await pdfWorker.loadDocument(f.data);
+        handles.push(handle);
+      }
+
+      const merged = await pdfWorker.mergePdfs(handles);
+
       const blob = new Blob([merged], { type: "application/pdf" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -41,6 +49,10 @@ export default function PdfMerge() {
     } catch (err: any) {
       setError(err.message || "Merge failed");
     } finally {
+      // Unload all documents
+      for (const h of handles) {
+        await pdfWorker.unloadDocument(h);
+      }
       setMerging(false);
     }
   }

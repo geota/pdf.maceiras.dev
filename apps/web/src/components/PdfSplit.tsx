@@ -1,10 +1,10 @@
-import { createSignal, Show } from "solid-js";
+import { createSignal, onCleanup, Show } from "solid-js";
 import * as pdfWorker from "../pdf-worker-client";
 
 export default function PdfSplit() {
   const [file, setFile] = createSignal<{
     name: string;
-    data: ArrayBuffer;
+    handle: string;
     pageCount: number;
   } | null>(null);
   const [rangeInput, setRangeInput] = createSignal("1-1");
@@ -12,18 +12,27 @@ export default function PdfSplit() {
   const [error, setError] = createSignal("");
   const [loading, setLoading] = createSignal(false);
 
+  onCleanup(() => {
+    const f = file();
+    if (f) pdfWorker.unloadDocument(f.handle);
+  });
+
   async function handleFile(e: Event) {
     const input = e.target as HTMLInputElement;
     const f = input.files?.[0];
     if (!f) return;
 
+    // Unload previous document
+    const prev = file();
+    if (prev) await pdfWorker.unloadDocument(prev.handle);
+
     setError("");
     setLoading(true);
     try {
       const data = await f.arrayBuffer();
-      const count = await pdfWorker.getPageCount(data);
-      setFile({ name: f.name, data, pageCount: count });
-      setRangeInput(`1-${count}`);
+      const { handle, pageCount } = await pdfWorker.loadDocument(data);
+      setFile({ name: f.name, handle, pageCount });
+      setRangeInput(`1-${pageCount}`);
     } catch (err: any) {
       setError(err.message || "Failed to load PDF");
     } finally {
@@ -63,8 +72,7 @@ export default function PdfSplit() {
     setSplitting(true);
     setError("");
     try {
-      const parts = await pdfWorker.splitPdf(f.data, ranges);
-      // Download each part
+      const parts = await pdfWorker.splitPdf(f.handle, ranges);
       parts.forEach((part: ArrayBuffer, i: number) => {
         const blob = new Blob([part], { type: "application/pdf" });
         const url = URL.createObjectURL(blob);

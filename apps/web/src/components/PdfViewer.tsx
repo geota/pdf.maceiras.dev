@@ -1,4 +1,4 @@
-import { createSignal, createEffect, onMount, Show, on } from "solid-js";
+import { createSignal, createEffect, onMount, onCleanup, Show, on } from "solid-js";
 import * as pdfWorker from "../pdf-worker-client";
 
 interface Props {
@@ -10,14 +10,15 @@ export default function PdfViewer(props: Props) {
   const [currentPage, setCurrentPage] = createSignal(0);
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal("");
+  const [handle, setHandle] = createSignal<string | null>(null);
   let canvasRef: HTMLCanvasElement | undefined;
 
   onMount(async () => {
     try {
       setLoading(true);
-      const count = await pdfWorker.getPageCount(props.pdfData);
+      const { handle: h, pageCount: count } = await pdfWorker.loadDocument(props.pdfData);
+      setHandle(h);
       setPageCount(count);
-      // Render first page
       await renderPage(0);
     } catch (err: any) {
       setError(err.message || "Failed to load PDF");
@@ -25,8 +26,11 @@ export default function PdfViewer(props: Props) {
     }
   });
 
-  // Explicit dependency tracking with `on()` — re-render when currentPage changes.
-  // Skips the initial run (defer: true) since onMount handles page 0.
+  onCleanup(() => {
+    const h = handle();
+    if (h) pdfWorker.unloadDocument(h);
+  });
+
   createEffect(
     on(currentPage, async (page) => {
       if (pageCount() === 0) return;
@@ -35,16 +39,13 @@ export default function PdfViewer(props: Props) {
   );
 
   async function renderPage(page: number) {
-    if (!canvasRef) return;
+    const h = handle();
+    if (!canvasRef || !h) return;
     try {
       setLoading(true);
       setError("");
       const renderWidth = 1200;
-      const imageData = await pdfWorker.renderPage(
-        props.pdfData,
-        page,
-        renderWidth
-      );
+      const imageData = await pdfWorker.renderPage(h, page, renderWidth);
 
       canvasRef.width = imageData.width;
       canvasRef.height = imageData.height;
