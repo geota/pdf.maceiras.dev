@@ -1,0 +1,11 @@
+[package]
+name = "pdf-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lopdf = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+flate2 = { workspace = true }
+serde = { workspace = true }
