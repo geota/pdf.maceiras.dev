@@ -39,6 +39,23 @@ pub fn get_pages_id(doc: &Document) -> Result<ObjectId> {
     }
 }
 
+/// Import multiple pages from the same source, sharing the object id map.
+/// Shared resources (fonts, images) are cloned once and reused across pages.
+pub fn import_pages(
+    target: &mut Document,
+    source: &Document,
+    page_ids: &[ObjectId],
+) -> Result<Vec<ObjectId>> {
+    let mut id_map = HashMap::new();
+    let mut result = Vec::with_capacity(page_ids.len());
+    for &page_id in page_ids {
+        let new_page_id = deep_clone_object(target, source, page_id, &mut id_map)?;
+        finalize_imported_page(target, new_page_id)?;
+        result.push(new_page_id);
+    }
+    Ok(result)
+}
+
 /// Import a single page (and its resources) from `source` into `target`.
 /// Sets the page's Parent to target's Pages, removes Annots, and updates Kids/Count.
 pub fn import_page(
@@ -48,10 +65,14 @@ pub fn import_page(
 ) -> Result<ObjectId> {
     let mut id_map = HashMap::new();
     let new_page_id = deep_clone_object(target, source, page_id, &mut id_map)?;
+    finalize_imported_page(target, new_page_id)?;
+    Ok(new_page_id)
+}
 
+/// Set Parent, remove Annots, and add to Pages Kids/Count.
+fn finalize_imported_page(target: &mut Document, new_page_id: ObjectId) -> Result<()> {
     let pages_id = get_pages_id(target)?;
 
-    // Update the page's Parent reference and remove annotations
     if let Ok(page_dict) = target
         .get_object_mut(new_page_id)
         .and_then(|o| o.as_dict_mut())
@@ -60,7 +81,6 @@ pub fn import_page(
         page_dict.remove(b"Annots");
     }
 
-    // Add page reference to the Pages Kids array and increment Count
     if let Ok(pages_dict) = target
         .get_object_mut(pages_id)
         .and_then(|o| o.as_dict_mut())
@@ -77,7 +97,7 @@ pub fn import_page(
         }
     }
 
-    Ok(new_page_id)
+    Ok(())
 }
 
 /// Recursively clone an object and all objects it references from source into target.

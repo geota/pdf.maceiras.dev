@@ -1,7 +1,7 @@
 use lopdf::Document;
 
 use crate::error::{PdfError, Result};
-use crate::page_utils::{create_empty_document, import_page};
+use crate::page_utils::{create_empty_document, import_pages};
 
 /// Reorder (and optionally subset/duplicate) pages in a PDF.
 ///
@@ -34,10 +34,13 @@ pub fn reorder_pages(data: &[u8], page_order: &[u32]) -> Result<Vec<u8>> {
 
     let (mut result, _pages_id) = create_empty_document();
 
-    for &idx in page_order {
-        let (_, page_id) = page_entries[idx as usize];
-        import_page(&mut result, &source, page_id)?;
-    }
+    // Collect page ObjectIds in desired order for batch import.
+    // import_pages shares the id_map so shared resources are cloned once.
+    let page_ids: Vec<_> = page_order
+        .iter()
+        .map(|&idx| page_entries[idx as usize].1)
+        .collect();
+    import_pages(&mut result, &source, &page_ids)?;
 
     result.compress();
     let mut buf = Vec::new();

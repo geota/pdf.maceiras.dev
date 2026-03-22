@@ -1,7 +1,7 @@
 use lopdf::Document;
 
 use crate::error::{PdfError, Result};
-use crate::page_utils::{create_empty_document, import_page};
+use crate::page_utils::{create_empty_document, import_pages};
 
 /// Merge multiple PDFs (as byte slices) into a single PDF.
 /// Pages appear in the order of the input documents.
@@ -34,11 +34,14 @@ pub fn merge_bytes(pdfs: &[&[u8]]) -> Result<Vec<u8>> {
         let mut page_numbers: Vec<u32> = pages.keys().copied().collect();
         page_numbers.sort();
 
-        for page_num in page_numbers {
-            if let Some(&page_id) = pages.get(&page_num) {
-                import_page(&mut merged, doc, page_id)?;
-            }
-        }
+        // Collect page ObjectIds in order for batch import
+        let page_ids: Vec<_> = page_numbers
+            .iter()
+            .filter_map(|num| pages.get(num).copied())
+            .collect();
+        // import_pages shares the id_map across all pages from this source,
+        // so shared resources (fonts, images) are cloned only once.
+        import_pages(&mut merged, doc, &page_ids)?;
     }
 
     let mut buf = Vec::new();

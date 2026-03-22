@@ -8,7 +8,12 @@ const THUMBNAIL_WIDTH = 120;
 const BATCH_SIZE = 4;
 
 export function useThumbnails(handle: () => string | null, pageCount: () => number) {
-  const [thumbnails, setThumbnails] = createSignal<Map<number, ImageData>>(new Map());
+  // Mutable map + version counter to trigger reactivity without copying.
+  // Avoids O(n^2) from creating new Map(prev) on every batch.
+  const thumbMap = new Map<number, ImageData>();
+  const [version, setVersion] = createSignal(0);
+  const thumbnails = () => { version(); return thumbMap; };
+
   const [loading, setLoading] = createSignal(false);
   let cancelled = false;
 
@@ -25,7 +30,8 @@ export function useThumbnails(handle: () => string | null, pageCount: () => numb
 
     cancelled = false;
     setLoading(true);
-    setThumbnails(new Map());
+    thumbMap.clear();
+    setVersion(0);
 
     const pool = getRenderPool();
 
@@ -54,14 +60,12 @@ export function useThumbnails(handle: () => string | null, pageCount: () => numb
         try {
           const results = await pool.renderPages(h!, indices, THUMBNAIL_WIDTH);
           if (cancelled) break;
-          setThumbnails((prev) => {
-            const next = new Map(prev);
-            for (let j = 0; j < indices.length; j++) {
-              const img = results[j];
-              if (img) next.set(indices[j], img);
-            }
-            return next;
-          });
+          // Mutate in place — O(batch_size) instead of O(total_loaded)
+          for (let j = 0; j < indices.length; j++) {
+            const img = results[j];
+            if (img) thumbMap.set(indices[j], img);
+          }
+          setVersion((v) => v + 1); // trigger reactivity
         } catch {
           // skip failed batch
         }

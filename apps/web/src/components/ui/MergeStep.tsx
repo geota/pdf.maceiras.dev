@@ -8,6 +8,7 @@ import {
   type DragEvent as DndDragEvent,
 } from "@thisbeyond/solid-dnd";
 import * as pdfWorker from "../../pdf-worker-client";
+import { getRenderPool } from "../../render-pool";
 
 interface LoadedPdf {
   id: string;
@@ -72,6 +73,10 @@ export default function MergeStep(props: MergeStepProps) {
     }
     setItems(loaded);
     setLoaded(true);
+
+    // Pre-warm render pool while user reorders files — pool initialization
+    // runs in parallel so it's ready immediately after merge completes.
+    getRenderPool();
   }
 
   // Kick off loading immediately

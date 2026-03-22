@@ -16,7 +16,7 @@ pub fn get_page_count_lopdf(data: &[u8]) -> Result<u32, JsError> {
 #[wasm_bindgen(js_name = "mergePdfs")]
 pub fn merge_pdfs(pdfs: Vec<js_sys::Uint8Array>) -> Result<Vec<u8>, JsError> {
     let byte_vecs: Vec<Vec<u8>> = pdfs.iter().map(|a| a.to_vec()).collect();
-    let slices: Vec<&[u8]> = byte_vecs.iter().map(|v| v.as_slice()).collect();
+    let slices: Vec<&[u8]> = byte_vecs.iter().map(|v| v.as_ref()).collect();
     pdf_core::merge::merge_bytes(&slices).map_err(|e| JsError::new(&e.to_string()))
 }
 
@@ -67,20 +67,38 @@ pub fn set_metadata(data: &[u8], metadata: JsValue) -> Result<Vec<u8>, JsError> 
 
 // --- PDF Rendering (pdfium-render) ---
 
+// Cache Pdfium instance — WASM is single-threaded so this is safe.
+// Avoids re-initializing Pdfium bindings on every call.
+use std::cell::RefCell;
+thread_local! {
+    static PDFIUM: RefCell<Option<pdfium_render::prelude::Pdfium>> = RefCell::new(None);
+}
+
+fn with_pdfium<T>(f: impl FnOnce(&pdfium_render::prelude::Pdfium) -> T) -> T {
+    PDFIUM.with(|cell| {
+        let mut opt = cell.borrow_mut();
+        if opt.is_none() {
+            *opt = Some(pdfium_render::prelude::Pdfium::default());
+        }
+        f(opt.as_ref().unwrap())
+    })
+}
+
 #[wasm_bindgen(js_name = "getPageCount")]
 pub fn get_page_count(data: &[u8]) -> Result<u32, JsError> {
-    let pdfium = pdfium_render::prelude::Pdfium::default();
-    let doc = pdfium
-        .load_pdf_from_byte_slice(data, None)
-        .map_err(|e| JsError::new(&e.to_string()))?;
-    Ok(doc.pages().len() as u32)
+    with_pdfium(|pdfium| {
+        let doc = pdfium
+            .load_pdf_from_byte_slice(data, None)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        Ok(doc.pages().len() as u32)
+    })
 }
 
 #[wasm_bindgen(js_name = "renderPage")]
 pub fn render_page(data: &[u8], page_index: u16, width: i32) -> Result<JsValue, JsError> {
     use pdfium_render::prelude::*;
 
-    let pdfium = Pdfium::default();
+    with_pdfium(|pdfium| {
     let doc = pdfium
         .load_pdf_from_byte_slice(data, None)
         .map_err(|e| JsError::new(&e.to_string()))?;
@@ -102,6 +120,7 @@ pub fn render_page(data: &[u8], page_index: u16, width: i32) -> Result<JsValue, 
         .map_err(|e| JsError::new(&format!("ImageData error: {e:?}")))?;
 
     Ok(image_data.into())
+    })
 }
 
 /// Render multiple pages in a single call — parses the PDF once.
@@ -111,70 +130,66 @@ pub fn render_page(data: &[u8], page_index: u16, width: i32) -> Result<JsValue, 
 pub fn render_pages(data: &[u8], page_indices: Vec<u16>, width: i32) -> Result<JsValue, JsError> {
     use pdfium_render::prelude::*;
 
-    let pdfium = Pdfium::default();
-    let doc = pdfium
-        .load_pdf_from_byte_slice(data, None)
-        .map_err(|e| JsError::new(&e.to_string()))?;
+    with_pdfium(|pdfium| {
+        let doc = pdfium
+            .load_pdf_from_byte_slice(data, None)
+            .map_err(|e| JsError::new(&e.to_string()))?;
 
-    let config = PdfRenderConfig::new()
-        .set_target_width(width)
-        .render_form_data(true);
+        let config = PdfRenderConfig::new()
+            .set_target_width(width)
+            .render_form_data(true);
 
-    let pages = doc.pages();
-    let result = js_sys::Array::new_with_length(page_indices.len() as u32);
+        let pages = doc.pages();
+        let result = js_sys::Array::new_with_length(page_indices.len() as u32);
 
-    for (i, &page_index) in page_indices.iter().enumerate() {
-        let val = match pages.get(page_index) {
-            Ok(page) => match page.render_with_config(&config) {
-                Ok(bitmap) => match bitmap.as_image_data() {
-                    Ok(img) => {
-                        // Create a JS-owned Uint8ClampedArray copy of the pixel data,
-                        // then construct ImageData from it. We can't use
-                        // new_with_u8_clamped_array because that creates a view into
-                        // WASM linear memory which gets overwritten on the next render.
-                        let w = img.width();
-                        let h = img.height();
-                        let pixels = img.data(); // Clamped<Vec<u8>>
-                        let js_pixels = js_sys::Uint8ClampedArray::new_with_length(pixels.0.len() as u32);
-                        js_pixels.copy_from(&pixels.0);
-                        match web_sys::ImageData::new_with_js_u8_clamped_array_and_sh(
-                            &js_pixels, w, h,
-                        ) {
-                            Ok(image_data) => image_data.into(),
-                            Err(_) => JsValue::NULL,
+        for (i, &page_index) in page_indices.iter().enumerate() {
+            let val = match pages.get(page_index) {
+                Ok(page) => match page.render_with_config(&config) {
+                    Ok(bitmap) => match bitmap.as_image_data() {
+                        Ok(img) => {
+                            let w = img.width();
+                            let h = img.height();
+                            let pixels = img.data();
+                            let js_pixels = js_sys::Uint8ClampedArray::new_with_length(pixels.0.len() as u32);
+                            js_pixels.copy_from(&pixels.0);
+                            match web_sys::ImageData::new_with_js_u8_clamped_array_and_sh(
+                                &js_pixels, w, h,
+                            ) {
+                                Ok(image_data) => image_data.into(),
+                                Err(_) => JsValue::NULL,
+                            }
                         }
-                    }
+                        Err(_) => JsValue::NULL,
+                    },
                     Err(_) => JsValue::NULL,
                 },
                 Err(_) => JsValue::NULL,
-            },
-            Err(_) => JsValue::NULL,
-        };
-        result.set(i as u32, val);
-    }
+            };
+            result.set(i as u32, val);
+        }
 
-    Ok(result.into())
+        Ok(result.into())
+    })
 }
 
 /// Get the dimensions (width_pts, height_pts) of a page.
 #[wasm_bindgen(js_name = "getPageDimensions")]
 pub fn get_page_dimensions(data: &[u8], page_index: u16) -> Result<JsValue, JsError> {
-    use pdfium_render::prelude::*;
+    with_pdfium(|pdfium| {
+        let doc = pdfium
+            .load_pdf_from_byte_slice(data, None)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        let page = doc
+            .pages()
+            .get(page_index)
+            .map_err(|e| JsError::new(&e.to_string()))?;
 
-    let pdfium = Pdfium::default();
-    let doc = pdfium
-        .load_pdf_from_byte_slice(data, None)
-        .map_err(|e| JsError::new(&e.to_string()))?;
-    let page = doc
-        .pages()
-        .get(page_index)
-        .map_err(|e| JsError::new(&e.to_string()))?;
+        let width = page.width().value;
+        let height = page.height().value;
 
-    let width = page.width().value;
-    let height = page.height().value;
-
-    let arr = js_sys::Array::new();
-    arr.push(&JsValue::from_f64(width as f64));
-    arr.push(&JsValue::from_f64(height as f64));
-    Ok(arr.into())
+        let arr = js_sys::Array::new();
+        arr.push(&JsValue::from_f64(width as f64));
+        arr.push(&JsValue::from_f64(height as f64));
+        Ok(arr.into())
+    })
 }

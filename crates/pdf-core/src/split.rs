@@ -1,7 +1,7 @@
 use lopdf::Document;
 
 use crate::error::{PdfError, Result};
-use crate::page_utils::{create_empty_document, import_page};
+use crate::page_utils::{create_empty_document, import_pages};
 use crate::types::PageRange;
 
 /// Split a PDF into multiple PDFs based on page ranges.
@@ -49,13 +49,13 @@ pub fn split_bytes(data: &[u8], ranges: &[PageRange]) -> Result<Vec<Vec<u8>>> {
     let mut results = Vec::with_capacity(ranges.len());
 
     for range in ranges {
-        // Build a new document with only the needed pages (instead of cloning everything)
+        // Build a new document with only the needed pages
         let (mut new_doc, _pages_id) = create_empty_document();
 
-        for idx in range.start..range.end {
-            let (_, page_id) = page_entries[idx as usize];
-            import_page(&mut new_doc, &doc, page_id)?;
-        }
+        let page_ids: Vec<_> = (range.start..range.end)
+            .map(|idx| page_entries[idx as usize].1)
+            .collect();
+        import_pages(&mut new_doc, &doc, &page_ids)?;
 
         new_doc.compress();
         let mut buf = Vec::new();

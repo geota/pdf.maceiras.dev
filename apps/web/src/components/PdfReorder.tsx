@@ -386,6 +386,7 @@ function SortableThumbnail(props: {
           : "border-gray-200 hover:border-gray-400"
       }`}
       classList={{ "opacity-50": sortable.isActiveDraggable }}
+      style={{ "content-visibility": "auto", "contain-intrinsic-size": "auto 150px 200px" }}
     >
       <Show
         when={props.thumbnails.has(props.pageIndex)}
