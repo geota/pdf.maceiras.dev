@@ -1,4 +1,4 @@
-import { createEffect, Show } from "solid-js";
+import { createEffect, For, Show } from "solid-js";
 
 interface Props {
   imageData: ImageData | undefined;
@@ -6,6 +6,8 @@ interface Props {
   selected?: boolean;
   /** Override border/ring color when selected, e.g. "border-red-500 ring-red-300" */
   selectedClass?: string;
+  /** Small colored dots shown in the top-right corner (e.g. group membership indicators) */
+  badges?: string[];
   onClick?: (e: MouseEvent) => void;
 }
 
@@ -42,6 +44,13 @@ export default function Thumbnail(props: Props) {
           ref={canvasRef}
           class="w-full h-auto"
         />
+      </Show>
+      <Show when={props.badges && props.badges.length > 0}>
+        <div class="absolute top-0.5 right-0.5 flex gap-0.5">
+          <For each={props.badges}>
+            {(dotClass) => <span class={`w-2 h-2 rounded-full ${dotClass}`} />}
+          </For>
+        </div>
       </Show>
       <div class="absolute bottom-0 left-0 right-0 bg-black/50 text-white text-xs text-center py-0.5">
         {props.pageIndex + 1}

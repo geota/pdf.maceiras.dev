@@ -9,7 +9,9 @@ import {
 } from "@thisbeyond/solid-dnd";
 import * as pdfWorker from "../pdf-worker-client";
 import DropZone from "./ui/DropZone";
+import MergeStep from "./ui/MergeStep";
 import { useThumbnails } from "../hooks/useThumbnails";
+import { parseGroupSegment, groupToText } from "../lib/page-ranges";
 
 interface PageItem {
   uid: string;
@@ -27,8 +29,10 @@ export default function PdfReorder() {
   const [pageCount, setPageCount] = createSignal(0);
   const [items, setItems] = createSignal<PageItem[]>([]);
   const [selectedUids, setSelectedUids] = createSignal<Set<string>>(new Set());
+  const [orderText, setOrderText] = createSignal("");
   const [saving, setSaving] = createSignal(false);
   const [error, setError] = createSignal("");
+  const [pendingFiles, setPendingFiles] = createSignal<File[] | null>(null);
   let lastClickedUid: string | null = null;
 
   const { thumbnails, loading: thumbsLoading, loadAll } = useThumbnails(handle, pageCount);
@@ -38,33 +42,56 @@ export default function PdfReorder() {
     if (h) pdfWorker.unloadDocument(h);
   });
 
-  async function handleFiles(files: File[]) {
-    const file = files[0];
-    if (!file) return;
-
+  function resetState() {
     const prev = handle();
     if (prev) pdfWorker.unloadDocument(prev);
-
-    setError("");
-    setFileName(file.name);
+    setHandle(null);
+    setFileName("");
+    setPageCount(0);
+    setItems([]);
     setSelectedUids(new Set<string>());
+    setOrderText("");
+    setError("");
+    setPendingFiles(null);
     lastClickedUid = null;
+  }
 
+  function initFromDocument(h: string, pc: number, name: string) {
+    setHandle(h);
+    setPageCount(pc);
+    setFileName(name);
+    const initialItems = Array.from({ length: pc }, (_, i) => ({
+      uid: makeUid(),
+      pageIdx: i,
+    }));
+    setItems(initialItems);
+    setOrderText(groupToText(initialItems.map((it) => it.pageIdx)));
+    loadAll();
+  }
+
+  async function handleFiles(files: File[]) {
+    if (!files.length) return;
+    resetState();
+
+    if (files.length > 1) {
+      setPendingFiles(files);
+      return;
+    }
+
+    const file = files[0];
+    setError("");
     try {
       const data = await file.arrayBuffer();
       const result = await pdfWorker.loadDocument(data);
-      setHandle(result.handle);
-      setPageCount(result.pageCount);
-      setItems(
-        Array.from({ length: result.pageCount }, (_, i) => ({
-          uid: makeUid(),
-          pageIdx: i,
-        }))
-      );
-      loadAll();
+      initFromDocument(result.handle, result.pageCount, file.name);
     } catch (err: any) {
       setError(err.message || "Failed to load PDF");
     }
+  }
+
+  function handleMerged(mergedHandle: string, mergedPageCount: number, mergedFileName: string) {
+    setPendingFiles(null);
+    initFromDocument(mergedHandle, mergedPageCount, mergedFileName);
   }
 
   function handleItemClick(uid: string, e: MouseEvent) {
@@ -127,6 +154,7 @@ export default function PdfReorder() {
       newList.splice(toIdx, 0, moved);
       setItems(newList);
     }
+    syncOrderText();
   }
 
   function deleteSelected() {
@@ -135,11 +163,32 @@ export default function PdfReorder() {
     setItems((prev) => prev.filter((it) => !sel.has(it.uid)));
     setSelectedUids(new Set<string>());
     lastClickedUid = null;
+    syncOrderText();
   }
 
   function clearSelection() {
     setSelectedUids(new Set<string>());
     lastClickedUid = null;
+  }
+
+  function syncOrderText() {
+    setOrderText(groupToText(items().map((it) => it.pageIdx)));
+  }
+
+  function applyOrderText() {
+    const text = orderText().trim();
+    if (!text) {
+      setError("Expression cannot be empty");
+      return;
+    }
+    const pages = parseGroupSegment(text, pageCount());
+    if (!pages || pages.length === 0) {
+      setError("Invalid expression. Use e.g. ::-1, 1-5+10, ::2+2::2");
+      return;
+    }
+    setError("");
+    setItems(pages.map((pageIdx) => ({ uid: makeUid(), pageIdx })));
+    clearSelection();
   }
 
   function resetOrder() {
@@ -150,6 +199,7 @@ export default function PdfReorder() {
       }))
     );
     clearSelection();
+    setOrderText(groupToText(Array.from({ length: pageCount() }, (_, i) => i)));
   }
 
   async function save() {
@@ -185,11 +235,23 @@ export default function PdfReorder() {
 
   return (
     <div>
-      <DropZone onFiles={handleFiles} accept=".pdf">
-        <p class="text-sm text-gray-500">
-          <span class="font-medium">Drop a PDF here</span> or click to browse
-        </p>
-      </DropZone>
+      <Show when={!handle() && !pendingFiles()}>
+        <DropZone onFiles={handleFiles} accept=".pdf" multiple>
+          <p class="text-sm text-gray-500">
+            <span class="font-medium">Drop PDF files here</span> or click to browse
+          </p>
+        </DropZone>
+      </Show>
+
+      <Show when={pendingFiles()}>
+        {(files) => (
+          <MergeStep
+            files={files()}
+            onMerged={handleMerged}
+            onStartOver={resetState}
+          />
+        )}
+      </Show>
 
       <Show when={handle()}>
         <div class="mt-4">
@@ -221,13 +283,37 @@ export default function PdfReorder() {
                   Reset
                 </button>
               </Show>
+              <button
+                onClick={resetState}
+                class="text-xs text-gray-500 hover:underline"
+              >
+                Start over
+              </button>
             </div>
           </div>
 
-          <p class="text-xs text-gray-400 mb-3">
-            Drag pages to reorder. Shift/Cmd+click to multi-select, then drag
-            to move as a group.
+          <p class="text-xs text-gray-400 mb-2">
+            Drag pages to reorder, or type an expression below. Shift/Cmd+click to multi-select.
           </p>
+
+          <div class="flex items-center gap-2 mb-3">
+            <input
+              type="text"
+              value={orderText()}
+              onInput={(e) => setOrderText(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") applyOrderText();
+              }}
+              placeholder="e.g. ::-1 (reverse), ::2+2::2 (odd then even), 5:1:-1+6-10"
+              class="border border-gray-300 rounded px-2 py-1 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <button
+              onClick={applyOrderText}
+              class="text-xs text-blue-600 hover:underline shrink-0"
+            >
+              Apply
+            </button>
+          </div>
 
           <DragDropProvider onDragEnd={onDragEnd} collisionDetector={closestCenter}>
             <DragDropSensors />

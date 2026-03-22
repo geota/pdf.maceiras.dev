@@ -73,6 +73,30 @@ const workerApi = {
     documents.delete(handle);
   },
 
+  /** Return raw document bytes for a handle (used to distribute to render pool). */
+  async getDocumentBytes(handle: string): Promise<ArrayBuffer> {
+    const doc = getDoc(handle);
+    // Return a copy so the original stays intact
+    const copy = new Uint8Array(doc).buffer as ArrayBuffer;
+    return Comlink.transfer(copy, [copy]);
+  },
+
+  /** Load a document from a SharedArrayBuffer — zero-copy across workers.
+   *  All workers share the same underlying memory. */
+  async loadDocumentFromShared(
+    sab: SharedArrayBuffer,
+    byteOffset: number,
+    byteLength: number,
+    handle: string
+  ): Promise<{ pageCount: number }> {
+    await initialize();
+    // Create a view over the shared memory — no copy
+    const bytes = new Uint8Array(sab, byteOffset, byteLength);
+    documents.set(handle, bytes);
+    const pageCount = api!.getPageCount(bytes);
+    return { pageCount };
+  },
+
   async getPageCount(handle: string): Promise<number> {
     await initialize();
     return api!.getPageCount(getDoc(handle));
@@ -85,6 +109,18 @@ const workerApi = {
   ): Promise<ImageData> {
     await initialize();
     return api!.renderPage(getDoc(handle), pageIndex, width);
+  },
+
+  /** Render multiple pages in one call — parses the PDF once in WASM. */
+  async renderPages(
+    handle: string,
+    pageIndices: number[],
+    width: number
+  ): Promise<(ImageData | null)[]> {
+    await initialize();
+    const doc = getDoc(handle);
+    // WASM returns proper ImageData objects directly (with copied pixel data)
+    return api!.renderPages(doc, new Uint16Array(pageIndices), width);
   },
 
   async getPageDimensions(
@@ -102,6 +138,18 @@ const workerApi = {
     const merged: Uint8Array = api!.mergePdfs(arrays);
     const buf = merged.buffer as ArrayBuffer;
     return Comlink.transfer(buf, [buf]);
+  },
+
+  /** Merge multiple loaded documents and store the result in worker memory.
+   *  Avoids transferring the merged bytes back and forth. */
+  async mergeAndLoad(handles: string[]): Promise<{ handle: string; pageCount: number }> {
+    await initialize();
+    const arrays = handles.map((h) => getDoc(h));
+    const merged: Uint8Array = api!.mergePdfs(arrays);
+    const handle = `doc_${nextHandle++}`;
+    documents.set(handle, merged);
+    const pageCount = api!.getPageCount(merged);
+    return { handle, pageCount };
   },
 
   /** Split a loaded document by page ranges. Returns ArrayBuffer per range. */

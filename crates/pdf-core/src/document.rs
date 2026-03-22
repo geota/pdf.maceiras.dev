@@ -97,9 +97,9 @@ impl PdfDocument {
         Ok(())
     }
 
-    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+    pub fn to_bytes(&mut self) -> Result<Vec<u8>> {
         let mut buf = Vec::new();
-        self.inner.clone().save_to(&mut buf)?;
+        self.inner.save_to(&mut buf)?;
         Ok(buf)
     }
 }

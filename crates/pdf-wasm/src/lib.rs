@@ -104,6 +104,58 @@ pub fn render_page(data: &[u8], page_index: u16, width: i32) -> Result<JsValue, 
     Ok(image_data.into())
 }
 
+/// Render multiple pages in a single call — parses the PDF once.
+/// Returns an Array of { width, height, data: Uint8ClampedArray } objects (or null).
+/// Pixel data is copied per page since pdfium reuses its internal buffer.
+#[wasm_bindgen(js_name = "renderPages")]
+pub fn render_pages(data: &[u8], page_indices: Vec<u16>, width: i32) -> Result<JsValue, JsError> {
+    use pdfium_render::prelude::*;
+
+    let pdfium = Pdfium::default();
+    let doc = pdfium
+        .load_pdf_from_byte_slice(data, None)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+
+    let config = PdfRenderConfig::new()
+        .set_target_width(width)
+        .render_form_data(true);
+
+    let pages = doc.pages();
+    let result = js_sys::Array::new_with_length(page_indices.len() as u32);
+
+    for (i, &page_index) in page_indices.iter().enumerate() {
+        let val = match pages.get(page_index) {
+            Ok(page) => match page.render_with_config(&config) {
+                Ok(bitmap) => match bitmap.as_image_data() {
+                    Ok(img) => {
+                        // Create a JS-owned Uint8ClampedArray copy of the pixel data,
+                        // then construct ImageData from it. We can't use
+                        // new_with_u8_clamped_array because that creates a view into
+                        // WASM linear memory which gets overwritten on the next render.
+                        let w = img.width();
+                        let h = img.height();
+                        let pixels = img.data(); // Clamped<Vec<u8>>
+                        let js_pixels = js_sys::Uint8ClampedArray::new_with_length(pixels.0.len() as u32);
+                        js_pixels.copy_from(&pixels.0);
+                        match web_sys::ImageData::new_with_js_u8_clamped_array_and_sh(
+                            &js_pixels, w, h,
+                        ) {
+                            Ok(image_data) => image_data.into(),
+                            Err(_) => JsValue::NULL,
+                        }
+                    }
+                    Err(_) => JsValue::NULL,
+                },
+                Err(_) => JsValue::NULL,
+            },
+            Err(_) => JsValue::NULL,
+        };
+        result.set(i as u32, val);
+    }
+
+    Ok(result.into())
+}
+
 /// Get the dimensions (width_pts, height_pts) of a page.
 #[wasm_bindgen(js_name = "getPageDimensions")]
 pub fn get_page_dimensions(data: &[u8], page_index: u16) -> Result<JsValue, JsError> {

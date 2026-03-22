@@ -39,7 +39,7 @@ fn metadata_returns_page_count() {
 #[test]
 fn roundtrip_preserves_pages() {
     let data = helpers::make_test_pdf(4);
-    let doc = PdfDocument::from_bytes(&data).unwrap();
+    let mut doc = PdfDocument::from_bytes(&data).unwrap();
     let output = doc.to_bytes().unwrap();
 
     let doc2 = PdfDocument::from_bytes(&output).unwrap();
