@@ -1,5 +1,6 @@
 import { createSignal, createMemo, For, onCleanup, Show } from "solid-js";
 import * as pdfWorker from "../pdf-worker-client";
+import { getRenderPool } from "../render-pool";
 import DropZone from "./ui/DropZone";
 import ThumbnailGrid from "./ui/ThumbnailGrid";
 import MergeStep from "./ui/MergeStep";
@@ -39,7 +40,7 @@ export default function PdfSplit() {
   const [error, setError] = createSignal("");
   const [pendingFiles, setPendingFiles] = createSignal<File[] | null>(null);
 
-  const { thumbnails, loading: thumbsLoading, loadAll } = useThumbnails(handle, pageCount);
+  const { thumbnails, loading: thumbsLoading, loadAll, updateVisiblePages } = useThumbnails(handle, pageCount);
 
   onCleanup(() => {
     const h = handle();
@@ -312,11 +313,14 @@ export default function PdfSplit() {
     setError("");
     try {
       const baseName = fileName().replace(/\.pdf$/i, "");
-      for (let gi = 0; gi < allRanges.length; gi++) {
-        const ranges = allRanges[gi];
-        const parts = await pdfWorker.splitPdf(h, ranges);
-        // If a group has non-contiguous pages, each sub-range is a separate part
-        // Merge them conceptually by downloading each
+
+      // Ensure document is loaded in pool workers (may already be from thumbnails)
+      const pool = getRenderPool();
+      await pool.ensureLoaded(h, () => pdfWorker.getDocumentBytes(h));
+      const allParts = await pool.splitPdfParallel(h, allRanges);
+
+      for (let gi = 0; gi < allParts.length; gi++) {
+        const parts = allParts[gi];
         if (parts.length === 1) {
           downloadBlob(parts[0], `${baseName}_group${gi + 1}.pdf`);
         } else {
@@ -481,6 +485,7 @@ export default function PdfSplit() {
             pageColorClass={pageColorClass}
             pageBadges={pageBadges}
             onPageClick={handlePageClick}
+            onVisiblePagesChange={updateVisiblePages}
           />
 
           <Show when={totalSelected() > 0}>

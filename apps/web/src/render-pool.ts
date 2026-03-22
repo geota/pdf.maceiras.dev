@@ -99,6 +99,26 @@ class RenderPool {
     return this.workers[idx].renderPages(poolHandle, pageIndices, width);
   }
 
+  /** Split a document in parallel — each group's ranges dispatched to a different worker.
+   *  Returns one ArrayBuffer[] per group (each sub-array has one buffer per contiguous range). */
+  async splitPdfParallel(
+    primaryHandle: string,
+    groupRanges: { start: number; end: number }[][]
+  ): Promise<ArrayBuffer[][]> {
+    await this.initPromise;
+    const poolHandle = this.handleMap.get(primaryHandle);
+    if (!poolHandle) throw new Error("Document not loaded in render pool");
+
+    // Dispatch each group to a worker round-robin
+    const promises = groupRanges.map((ranges, gi) => {
+      const idx = (this.nextIdx + gi) % this.workers.length;
+      return this.workers[idx].splitPdf(poolHandle, ranges);
+    });
+    this.nextIdx += groupRanges.length;
+
+    return Promise.all(promises);
+  }
+
   /** Number of workers in the pool. */
   get size(): number {
     return this.workers.length;

@@ -1,4 +1,4 @@
-import { createSignal, createEffect, For, Show, onCleanup } from "solid-js";
+import { createSignal, createEffect, For, Show, onCleanup, onMount } from "solid-js";
 import {
   DragDropProvider,
   DragDropSensors,
@@ -35,7 +35,47 @@ export default function PdfReorder() {
   const [pendingFiles, setPendingFiles] = createSignal<File[] | null>(null);
   let lastClickedUid: string | null = null;
 
-  const { thumbnails, loading: thumbsLoading, loadAll } = useThumbnails(handle, pageCount);
+  const { thumbnails, loading: thumbsLoading, loadAll, updateVisiblePages } = useThumbnails(handle, pageCount);
+
+  // IntersectionObserver for viewport-aware thumbnail priority
+  const elementToPage = new Map<Element, number>();
+  const visibleSet = new Set<number>();
+  let observer: IntersectionObserver | undefined;
+
+  onMount(() => {
+    observer = new IntersectionObserver(
+      (entries) => {
+        let changed = false;
+        for (const entry of entries) {
+          const pageIdx = elementToPage.get(entry.target);
+          if (pageIdx == null) continue;
+          if (entry.isIntersecting && !visibleSet.has(pageIdx)) {
+            visibleSet.add(pageIdx);
+            changed = true;
+          } else if (!entry.isIntersecting && visibleSet.has(pageIdx)) {
+            visibleSet.delete(pageIdx);
+            changed = true;
+          }
+        }
+        if (changed) updateVisiblePages(new Set(visibleSet));
+      },
+      { root: null, rootMargin: "200px 0px", threshold: 0 }
+    );
+  });
+
+  function observeElement(el: Element, pageIdx: number) {
+    elementToPage.set(el, pageIdx);
+    observer?.observe(el);
+  }
+
+  function unobserveElement(el: Element) {
+    elementToPage.delete(el);
+    observer?.unobserve(el);
+  }
+
+  onCleanup(() => {
+    observer?.disconnect();
+  });
 
   onCleanup(() => {
     const h = handle();
@@ -327,6 +367,8 @@ export default function PdfReorder() {
                       thumbnails={thumbnails()}
                       isSelected={selectedUids().has(item.uid)}
                       onClick={(e) => handleItemClick(item.uid, e)}
+                      onObserve={observeElement}
+                      onUnobserve={unobserveElement}
                     />
                   )}
                 </For>
@@ -363,9 +405,12 @@ function SortableThumbnail(props: {
   thumbnails: Map<number, ImageData>;
   isSelected: boolean;
   onClick: (e: MouseEvent) => void;
+  onObserve?: (el: Element, pageIdx: number) => void;
+  onUnobserve?: (el: Element) => void;
 }) {
   const sortable = createSortable(props.uid);
   let canvasRef: HTMLCanvasElement | undefined;
+  let wrapperRef: HTMLDivElement | undefined;
 
   // Reactively render when thumbnail data becomes available
   createEffect(() => {
@@ -376,9 +421,17 @@ function SortableThumbnail(props: {
     canvasRef.getContext("2d")!.putImageData(img, 0, 0);
   });
 
+  onCleanup(() => {
+    if (wrapperRef) props.onUnobserve?.(wrapperRef);
+  });
+
   return (
     <div
-      ref={sortable}
+      ref={(el) => {
+        wrapperRef = el;
+        sortable(el);
+        props.onObserve?.(el, props.pageIndex);
+      }}
       onClick={props.onClick}
       class={`relative cursor-grab active:cursor-grabbing rounded border-2 overflow-hidden transition-colors ${
         props.isSelected
