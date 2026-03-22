@@ -4,8 +4,12 @@ interface Props {
   imageData: ImageData | undefined;
   pageIndex: number;
   selected?: boolean;
+  /** Override border/ring color when selected, e.g. "border-red-500 ring-red-300" */
+  selectedClass?: string;
   onClick?: (e: MouseEvent) => void;
 }
+
+const DEFAULT_SELECTED = "border-blue-500 ring-2 ring-blue-300";
 
 export default function Thumbnail(props: Props) {
   let canvasRef: HTMLCanvasElement | undefined;
@@ -22,9 +26,9 @@ export default function Thumbnail(props: Props) {
   return (
     <div
       onClick={(e) => props.onClick?.(e)}
-      class={`relative cursor-pointer rounded border-2 overflow-hidden transition-all ${
+      class={`relative cursor-pointer rounded border-2 overflow-hidden transition-colors ${
         props.selected
-          ? "border-blue-500 ring-2 ring-blue-300"
+          ? props.selectedClass ?? DEFAULT_SELECTED
           : "border-gray-200 hover:border-gray-400"
       }`}
     >
