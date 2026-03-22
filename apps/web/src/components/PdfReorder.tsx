@@ -1,4 +1,4 @@
-import { createSignal, For, Show, onCleanup } from "solid-js";
+import { createSignal, createEffect, For, Show, onCleanup } from "solid-js";
 import {
   DragDropProvider,
   DragDropSensors,
@@ -10,18 +10,28 @@ import {
 import * as pdfWorker from "../pdf-worker-client";
 import DropZone from "./ui/DropZone";
 import { useThumbnails } from "../hooks/useThumbnails";
-import { useSelection } from "../hooks/useSelection";
+
+interface PageItem {
+  uid: string;
+  pageIdx: number;
+}
+
+let uidCounter = 0;
+function makeUid() {
+  return `ri_${uidCounter++}`;
+}
 
 export default function PdfReorder() {
   const [handle, setHandle] = createSignal<string | null>(null);
   const [fileName, setFileName] = createSignal("");
   const [pageCount, setPageCount] = createSignal(0);
-  const [pageOrder, setPageOrder] = createSignal<number[]>([]);
+  const [items, setItems] = createSignal<PageItem[]>([]);
+  const [selectedUids, setSelectedUids] = createSignal<Set<string>>(new Set());
   const [saving, setSaving] = createSignal(false);
   const [error, setError] = createSignal("");
+  let lastClickedUid: string | null = null;
 
   const { thumbnails, loading: thumbsLoading, loadAll } = useThumbnails(handle, pageCount);
-  const { selected, handleSelect, clearSelection } = useSelection();
 
   onCleanup(() => {
     const h = handle();
@@ -37,74 +47,108 @@ export default function PdfReorder() {
 
     setError("");
     setFileName(file.name);
-    clearSelection();
+    setSelectedUids(new Set<string>());
+    lastClickedUid = null;
 
     try {
       const data = await file.arrayBuffer();
       const result = await pdfWorker.loadDocument(data);
       setHandle(result.handle);
       setPageCount(result.pageCount);
-      setPageOrder(Array.from({ length: result.pageCount }, (_, i) => i));
+      setItems(
+        Array.from({ length: result.pageCount }, (_, i) => ({
+          uid: makeUid(),
+          pageIdx: i,
+        }))
+      );
       loadAll();
     } catch (err: any) {
       setError(err.message || "Failed to load PDF");
     }
   }
 
+  function handleItemClick(uid: string, e: MouseEvent) {
+    const isMeta = e.metaKey || e.ctrlKey;
+    const isShift = e.shiftKey;
+
+    setSelectedUids((prev) => {
+      const next = new Set(prev);
+      if (isShift && lastClickedUid) {
+        const list = items();
+        const lastIdx = list.findIndex((it) => it.uid === lastClickedUid);
+        const curIdx = list.findIndex((it) => it.uid === uid);
+        if (lastIdx !== -1 && curIdx !== -1) {
+          const start = Math.min(lastIdx, curIdx);
+          const end = Math.max(lastIdx, curIdx);
+          for (let i = start; i <= end; i++) next.add(list[i].uid);
+        }
+      } else if (isMeta) {
+        if (next.has(uid)) next.delete(uid);
+        else next.add(uid);
+      } else {
+        next.clear();
+        next.add(uid);
+      }
+      return next;
+    });
+    lastClickedUid = uid;
+  }
+
   function onDragEnd({ draggable, droppable }: DndDragEvent) {
     if (!draggable || !droppable) return;
-    const fromId = String(draggable.id);
-    const toId = String(droppable.id);
-    if (fromId === toId) return;
+    const fromUid = String(draggable.id);
+    const toUid = String(droppable.id);
+    if (fromUid === toUid) return;
 
-    const sel = selected();
-    const order = pageOrder();
-
-    // If dragging a selected item, move all selected items
-    const fromIdx = order.findIndex((_, i) => `page_${i}` === fromId);
-    const toIdx = order.findIndex((_, i) => `page_${i}` === toId);
+    const sel = selectedUids();
+    const list = items();
+    const fromIdx = list.findIndex((it) => it.uid === fromUid);
+    const toIdx = list.findIndex((it) => it.uid === toUid);
     if (fromIdx === -1 || toIdx === -1) return;
 
-    if (sel.size > 1 && sel.has(order[fromIdx])) {
-      // Multi-drag: extract selected items, insert at drop position
-      const selectedPages = new Set(sel);
-      const remaining: number[] = [];
-      const moved: number[] = [];
-
-      for (const p of order) {
-        if (selectedPages.has(p)) {
-          moved.push(p);
-        } else {
-          remaining.push(p);
-        }
+    if (sel.size > 1 && sel.has(fromUid)) {
+      // Multi-drag
+      const moved: PageItem[] = [];
+      const remaining: PageItem[] = [];
+      for (const item of list) {
+        if (sel.has(item.uid)) moved.push(item);
+        else remaining.push(item);
       }
-
-      // Find insert position in remaining array
-      const dropPage = order[toIdx];
-      let insertIdx = remaining.indexOf(dropPage);
+      // Insert at drop target's position in remaining
+      let insertIdx = remaining.findIndex((it) => it.uid === toUid);
       if (insertIdx === -1) insertIdx = remaining.length;
-      if (toIdx > fromIdx) insertIdx++;
-
+      else if (toIdx > fromIdx) insertIdx++;
       remaining.splice(insertIdx, 0, ...moved);
-      setPageOrder(remaining);
+      setItems(remaining);
     } else {
       // Single drag
-      const newOrder = [...order];
-      const [moved] = newOrder.splice(fromIdx, 1);
-      newOrder.splice(toIdx, 0, moved);
-      setPageOrder(newOrder);
+      const newList = [...list];
+      const [moved] = newList.splice(fromIdx, 1);
+      newList.splice(toIdx, 0, moved);
+      setItems(newList);
     }
   }
 
   function deleteSelected() {
-    const sel = selected();
+    const sel = selectedUids();
     if (sel.size === 0) return;
-    setPageOrder((prev) => prev.filter((p) => !sel.has(p)));
-    clearSelection();
+    setItems((prev) => prev.filter((it) => !sel.has(it.uid)));
+    setSelectedUids(new Set<string>());
+    lastClickedUid = null;
+  }
+
+  function clearSelection() {
+    setSelectedUids(new Set<string>());
+    lastClickedUid = null;
   }
 
   function resetOrder() {
-    setPageOrder(Array.from({ length: pageCount() }, (_, i) => i));
+    setItems(
+      Array.from({ length: pageCount() }, (_, i) => ({
+        uid: makeUid(),
+        pageIdx: i,
+      }))
+    );
     clearSelection();
   }
 
@@ -115,7 +159,8 @@ export default function PdfReorder() {
     setSaving(true);
     setError("");
     try {
-      const result = await pdfWorker.reorderPages(h, pageOrder());
+      const order = items().map((it) => it.pageIdx);
+      const result = await pdfWorker.reorderPages(h, order);
       const blob = new Blob([result], { type: "application/pdf" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -132,10 +177,10 @@ export default function PdfReorder() {
   }
 
   const isModified = () => {
-    const order = pageOrder();
+    const list = items();
     const count = pageCount();
-    if (order.length !== count) return true;
-    return order.some((p, i) => p !== i);
+    if (list.length !== count) return true;
+    return list.some((it, i) => it.pageIdx !== i);
   };
 
   return (
@@ -150,16 +195,22 @@ export default function PdfReorder() {
         <div class="mt-4">
           <div class="flex items-center justify-between mb-3">
             <p class="text-sm text-gray-600">
-              {fileName()} — {pageOrder().length}/{pageCount()} pages
+              {fileName()} — {items().length}/{pageCount()} pages
               {thumbsLoading() ? " (loading thumbnails...)" : ""}
             </p>
             <div class="flex gap-2">
-              <Show when={selected().size > 0}>
+              <Show when={selectedUids().size > 0}>
                 <button
                   onClick={deleteSelected}
                   class="text-xs text-red-500 hover:underline"
                 >
-                  Delete selected ({selected().size})
+                  Delete selected ({selectedUids().size})
+                </button>
+                <button
+                  onClick={clearSelection}
+                  class="text-xs text-gray-500 hover:underline"
+                >
+                  Clear selection
                 </button>
               </Show>
               <Show when={isModified()}>
@@ -174,22 +225,22 @@ export default function PdfReorder() {
           </div>
 
           <p class="text-xs text-gray-400 mb-3">
-            Drag pages to reorder. Select multiple with Shift/Cmd+click, then
-            drag to move as a group.
+            Drag pages to reorder. Shift/Cmd+click to multi-select, then drag
+            to move as a group.
           </p>
 
           <DragDropProvider onDragEnd={onDragEnd} collisionDetector={closestCenter}>
             <DragDropSensors />
-            <SortableProvider ids={pageOrder().map((_, i) => `page_${i}`)}>
+            <SortableProvider ids={items().map((it) => it.uid)}>
               <div class="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 gap-3">
-                <For each={pageOrder()}>
-                  {(pageIdx, i) => (
+                <For each={items()}>
+                  {(item) => (
                     <SortableThumbnail
-                      sortId={`page_${i()}`}
-                      pageIndex={pageIdx}
-                      imageData={thumbnails().get(pageIdx)}
-                      selected={selected().has(pageIdx)}
-                      onClick={(e) => handleSelect(pageIdx, e)}
+                      uid={item.uid}
+                      pageIndex={item.pageIdx}
+                      thumbnails={thumbnails()}
+                      isSelected={selectedUids().has(item.uid)}
+                      onClick={(e) => handleItemClick(item.uid, e)}
                     />
                   )}
                 </For>
@@ -221,48 +272,40 @@ export default function PdfReorder() {
 }
 
 function SortableThumbnail(props: {
-  sortId: string;
+  uid: string;
   pageIndex: number;
-  imageData: ImageData | undefined;
-  selected: boolean;
+  thumbnails: Map<number, ImageData>;
+  isSelected: boolean;
   onClick: (e: MouseEvent) => void;
 }) {
-  const sortable = createSortable(props.sortId);
+  const sortable = createSortable(props.uid);
   let canvasRef: HTMLCanvasElement | undefined;
 
-  function render() {
-    const img = props.imageData;
+  // Reactively render when thumbnail data becomes available
+  createEffect(() => {
+    const img = props.thumbnails.get(props.pageIndex);
     if (!canvasRef || !img) return;
     canvasRef.width = img.width;
     canvasRef.height = img.height;
     canvasRef.getContext("2d")!.putImageData(img, 0, 0);
-  }
+  });
 
   return (
     <div
-      ref={(el) => {
-        sortable(el);
-        requestAnimationFrame(render);
-      }}
+      ref={sortable}
       onClick={props.onClick}
-      class={`relative cursor-grab active:cursor-grabbing rounded border-2 overflow-hidden transition-all ${
-        props.selected
+      class={`relative cursor-grab active:cursor-grabbing rounded border-2 overflow-hidden transition-colors ${
+        props.isSelected
           ? "border-blue-500 ring-2 ring-blue-300"
           : "border-gray-200 hover:border-gray-400"
       }`}
       classList={{ "opacity-50": sortable.isActiveDraggable }}
     >
       <Show
-        when={props.imageData}
+        when={props.thumbnails.has(props.pageIndex)}
         fallback={<div class="w-full aspect-[3/4] bg-gray-100 animate-pulse" />}
       >
-        <canvas
-          ref={(el) => {
-            canvasRef = el;
-            requestAnimationFrame(render);
-          }}
-          class="w-full h-auto"
-        />
+        <canvas ref={canvasRef} class="w-full h-auto" />
       </Show>
       <div class="absolute bottom-0 left-0 right-0 bg-black/50 text-white text-xs text-center py-0.5">
         {props.pageIndex + 1}
