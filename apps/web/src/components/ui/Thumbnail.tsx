@@ -9,6 +9,7 @@ interface Props {
   /** Small colored dots shown in the top-right corner (e.g. group membership indicators) */
   badges?: string[];
   onClick?: (e: MouseEvent) => void;
+  onDblClick?: (e: MouseEvent) => void;
 }
 
 const DEFAULT_SELECTED = "border-blue-500 ring-2 ring-blue-300";
@@ -28,6 +29,7 @@ export default function Thumbnail(props: Props) {
   return (
     <div
       onClick={(e) => props.onClick?.(e)}
+      onDblClick={(e) => props.onDblClick?.(e)}
       class={`relative cursor-pointer rounded border-2 overflow-hidden transition-colors ${
         props.selected
           ? props.selectedClass ?? DEFAULT_SELECTED

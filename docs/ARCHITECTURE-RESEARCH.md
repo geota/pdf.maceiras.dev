@@ -1,4 +1,4 @@
-# pdf-rs: Architecture Research Document
+# pdf.maceiras.dev: Architecture Research Document
 
 > **Date:** 2026-03-16
 > **Status:** Initial Research / Pre-Implementation
@@ -543,7 +543,7 @@ For Phase 1, two viable approaches:
 ### 11.1 Monorepo Structure
 
 ```
-pdf-rs/
+pdf.maceiras.dev/
 ├── Cargo.toml                    # Workspace root
 ├── Cargo.lock
 ├── justfile                      # Top-level task runner

@@ -24,7 +24,7 @@ export default function Sidebar(props: Props) {
   return (
     <aside class="w-48 shrink-0 bg-gray-900 text-gray-300 flex flex-col">
       <div class="px-4 py-5">
-        <h1 class="text-lg font-bold text-white tracking-tight">pdf-rs</h1>
+        <h1 class="text-lg font-bold text-white tracking-tight">pdf.maceiras.dev</h1>
       </div>
       <nav class="flex-1 px-2 space-y-1">
         <For each={navItems}>

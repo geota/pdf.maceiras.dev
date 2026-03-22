@@ -3,6 +3,7 @@ import * as pdfWorker from "../pdf-worker-client";
 import { getRenderPool } from "../render-pool";
 import DropZone from "./ui/DropZone";
 import ThumbnailGrid from "./ui/ThumbnailGrid";
+import PagePreview from "./ui/PagePreview";
 import MergeStep from "./ui/MergeStep";
 import { useThumbnails } from "../hooks/useThumbnails";
 import { groupToText, parseFullExpression, removePageFromSegmentText, compactSegment } from "../lib/page-ranges";
@@ -39,6 +40,7 @@ export default function PdfSplit() {
   const [splitting, setSplitting] = createSignal(false);
   const [error, setError] = createSignal("");
   const [pendingFiles, setPendingFiles] = createSignal<File[] | null>(null);
+  const [previewPage, setPreviewPage] = createSignal<number | null>(null);
 
   const { thumbnails, loading: thumbsLoading, loadAll, updateVisiblePages } = useThumbnails(handle, pageCount);
 
@@ -485,6 +487,7 @@ export default function PdfSplit() {
             pageColorClass={pageColorClass}
             pageBadges={pageBadges}
             onPageClick={handlePageClick}
+            onPageDblClick={(pageIndex) => setPreviewPage(pageIndex)}
             onVisiblePagesChange={updateVisiblePages}
           />
 
@@ -510,6 +513,15 @@ export default function PdfSplit() {
         <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mt-4 text-sm">
           {error()}
         </div>
+      </Show>
+
+      <Show when={previewPage() != null && handle()}>
+        <PagePreview
+          handle={handle()!}
+          pageCount={pageCount()}
+          pageIndex={previewPage()!}
+          onClose={() => setPreviewPage(null)}
+        />
       </Show>
     </div>
   );

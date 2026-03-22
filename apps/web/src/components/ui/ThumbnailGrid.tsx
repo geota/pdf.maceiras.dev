@@ -10,6 +10,7 @@ interface Props {
   /** Small colored dots for group membership indicators */
   pageBadges?: (pageIndex: number) => string[];
   onPageClick?: (pageIndex: number, e: MouseEvent) => void;
+  onPageDblClick?: (pageIndex: number, e: MouseEvent) => void;
   /** Called when the set of visible page indices changes (for render prioritization). */
   onVisiblePagesChange?: (visible: Set<number>) => void;
 }
@@ -70,6 +71,7 @@ export default function ThumbnailGrid(props: Props) {
                 selectedClass={colorClass()}
                 badges={badges()}
                 onClick={(e) => props.onPageClick?.(pageIndex, e)}
+                onDblClick={(e) => props.onPageDblClick?.(pageIndex, e)}
               />
             </div>
           );

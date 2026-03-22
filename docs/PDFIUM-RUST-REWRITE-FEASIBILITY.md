@@ -353,9 +353,9 @@ This assumes experienced Rust developers with PDF domain knowledge.
 
 ## 10. Recommendation
 
-### For the pdf-rs project specifically:
+### For the pdf.maceiras.dev project specifically:
 
-The full rewrite is out of scope for a solo/small-team project. However, **targeted modules** from this roadmap directly serve the pdf-rs webapp:
+The full rewrite is out of scope for a solo/small-team project. However, **targeted modules** from this roadmap directly serve the pdf.maceiras.dev webapp:
 
 1. **Phase 1 (parser + text extraction)** is achievable and immediately useful — it replaces `lopdf` with a more capable foundation.
 2. **Phase 2 (rendering)** would eliminate the dependency on `pdf.js` for viewing, enabling a fully-Rust pipeline from PDF bytes to pixels, all in WASM.

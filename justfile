@@ -1,4 +1,4 @@
-# pdf-rs justfile
+# pdf.maceiras.dev justfile
 
 default:
     @just --list

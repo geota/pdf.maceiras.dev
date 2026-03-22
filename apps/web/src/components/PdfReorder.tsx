@@ -12,6 +12,7 @@ import DropZone from "./ui/DropZone";
 import MergeStep from "./ui/MergeStep";
 import { useThumbnails } from "../hooks/useThumbnails";
 import { parseGroupSegment, groupToText } from "../lib/page-ranges";
+import PagePreview from "./ui/PagePreview";
 
 interface PageItem {
   uid: string;
@@ -33,6 +34,7 @@ export default function PdfReorder() {
   const [saving, setSaving] = createSignal(false);
   const [error, setError] = createSignal("");
   const [pendingFiles, setPendingFiles] = createSignal<File[] | null>(null);
+  const [previewPage, setPreviewPage] = createSignal<number | null>(null);
   let lastClickedUid: string | null = null;
 
   const { thumbnails, loading: thumbsLoading, loadAll, updateVisiblePages } = useThumbnails(handle, pageCount);
@@ -367,6 +369,7 @@ export default function PdfReorder() {
                       thumbnails={thumbnails()}
                       isSelected={selectedUids().has(item.uid)}
                       onClick={(e) => handleItemClick(item.uid, e)}
+                      onDblClick={() => setPreviewPage(item.pageIdx)}
                       onObserve={observeElement}
                       onUnobserve={unobserveElement}
                     />
@@ -395,6 +398,15 @@ export default function PdfReorder() {
           {error()}
         </div>
       </Show>
+
+      <Show when={previewPage() != null && handle()}>
+        <PagePreview
+          handle={handle()!}
+          pageCount={pageCount()}
+          pageIndex={previewPage()!}
+          onClose={() => setPreviewPage(null)}
+        />
+      </Show>
     </div>
   );
 }
@@ -405,6 +417,7 @@ function SortableThumbnail(props: {
   thumbnails: Map<number, ImageData>;
   isSelected: boolean;
   onClick: (e: MouseEvent) => void;
+  onDblClick?: () => void;
   onObserve?: (el: Element, pageIdx: number) => void;
   onUnobserve?: (el: Element) => void;
 }) {
@@ -433,6 +446,7 @@ function SortableThumbnail(props: {
         props.onObserve?.(el, props.pageIndex);
       }}
       onClick={props.onClick}
+      onDblClick={() => props.onDblClick?.()}
       class={`relative cursor-grab active:cursor-grabbing rounded border-2 overflow-hidden transition-colors ${
         props.isSelected
           ? "border-blue-500 ring-2 ring-blue-300"
