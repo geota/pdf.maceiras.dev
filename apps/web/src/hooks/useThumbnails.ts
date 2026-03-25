@@ -5,6 +5,20 @@ import { getRenderPool } from "../render-pool";
 const THUMBNAIL_WIDTH = 120;
 const BATCH_SIZE = 4;
 
+// Global thumbnail cache — survives component mount/unmount cycles.
+// Keyed by document handle → page index → ImageData.
+const globalCache = new Map<string, Map<number, ImageData>>();
+
+/** Clear cached thumbnails for a handle (call when unloading a document). */
+export function clearThumbnailCache(handle: string) {
+  globalCache.delete(handle);
+}
+
+/** Read a single page from the thumbnail cache (returns undefined on miss). */
+export function getThumbnailFromCache(handle: string, page: number): ImageData | undefined {
+  return globalCache.get(handle)?.get(page);
+}
+
 export function useThumbnails(handle: () => string | null, pageCount: () => number) {
   const thumbMap = new Map<number, ImageData>();
   const [version, setVersion] = createSignal(0);
@@ -19,8 +33,7 @@ export function useThumbnails(handle: () => string | null, pageCount: () => numb
 
   onCleanup(() => {
     cancelled = true;
-    const h = handle();
-    if (h) getRenderPool().unload(h);
+    // Don't unload from render pool — the PdfContext owns the document lifecycle.
   });
 
   /** Called by the grid's IntersectionObserver when visibility changes. */
@@ -63,13 +76,38 @@ export function useThumbnails(handle: () => string | null, pageCount: () => numb
     cancelled = false;
     setLoading(true);
     thumbMap.clear();
-    setVersion(0);
 
-    pendingPages = new Set(Array.from({ length: count }, (_, i) => i));
+    // Restore from global cache
+    const cached = globalCache.get(h);
+    if (cached) {
+      for (const [page, img] of cached) {
+        thumbMap.set(page, img);
+      }
+      setVersion((v) => v + 1);
+    }
+
+    // Only render pages not already cached
+    const needed: number[] = [];
+    for (let i = 0; i < count; i++) {
+      if (!thumbMap.has(i)) needed.push(i);
+    }
+
+    if (needed.length === 0) {
+      setLoading(false);
+      return;
+    }
+
+    pendingPages = new Set(needed);
 
     const pool = getRenderPool();
     await pool.ensureLoaded(h, () => pdfWorker.getDocumentBytes(h));
     if (cancelled) return;
+
+    // Ensure global cache entry exists
+    if (!globalCache.has(h)) {
+      globalCache.set(h, new Map());
+    }
+    const cache = globalCache.get(h)!;
 
     async function workerLoop() {
       while (!cancelled) {
@@ -80,7 +118,10 @@ export function useThumbnails(handle: () => string | null, pageCount: () => numb
           if (cancelled) break;
           for (let j = 0; j < batch.length; j++) {
             const img = results[j];
-            if (img) thumbMap.set(batch[j], img);
+            if (img) {
+              thumbMap.set(batch[j], img);
+              cache.set(batch[j], img);
+            }
           }
           setVersion((v) => v + 1);
         } catch {

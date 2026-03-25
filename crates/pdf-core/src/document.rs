@@ -39,8 +39,8 @@ impl PdfDocument {
             info_dict?
                 .get(key)
                 .ok()
-                .and_then(|v| v.as_string().ok())
-                .map(|s| s.to_string())
+                .and_then(|v| v.as_str().ok())
+                .map(|s| String::from_utf8_lossy(s).into_owned())
         };
 
         PdfMetadata {

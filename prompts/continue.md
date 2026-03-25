@@ -1,0 +1,1 @@
+Resume pdf.maceiras.dev project: research is done (docs/ARCHITECTURE-RESEARCH.md), need to decide Astro vs plain Vite for the editor, then scaffold the project (Cargo workspace + pnpm workspace + justfile + CI)

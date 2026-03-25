@@ -1,0 +1,15 @@
+  Done:
+  - oxipng code is fully written and integrated — recompress_images_oxipng() in image_opt.rs, wired into the pipeline as Technique 5
+  - All 64 native tests pass
+
+  Blocked on:
+  - libdeflate-sys C compilation for wasm32-unknown-unknown — macOS stddef.h (both Apple clang and Homebrew LLVM) includes SDK headers that reject the wasm32 architecture
+
+  After Xcode CLT update, try:
+  1. cargo check -p pdf-wasm --target wasm32-unknown-unknown
+  2. If still failing, check /opt/homebrew/etc/clang/*.cfg for macOS SDK config overrides
+  3. Try wasm-pack build instead of plain cargo check (Squoosh uses wasm-pack which may handle CC differently)
+
+
+Retry WASM build after Xcode CLT update: cargo check -p pdf-wasm --target wasm32-unknown-unknown — if still failing, check /opt/homebrew/etc/clang/*.cfg for SDK overrides, then try wasm-pack build, then try CC_wasm32_unknown_unknown="/opt/homebrew/opt/llvm/bin/clang" with
+  CFLAGS_wasm32_unknown_unknown="-nostdinc -isystem $(/opt/homebrew/opt/llvm/bin/clang -print-resource-dir)/include"

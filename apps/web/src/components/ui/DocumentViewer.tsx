@@ -7,6 +7,15 @@ const RENDER_WIDTH = 1200;
 const PRERENDER_MARGIN = 500;
 const LOOKAHEAD_EACH_SIDE = 15;
 
+// Global full-size render cache — survives component mount/unmount cycles.
+// Keyed by document handle → page index → ImageData.
+const globalRenderCache = new Map<string, Map<number, ImageData>>();
+
+/** Clear cached renders for a handle (call when unloading a document). */
+export function clearRenderCache(handle: string) {
+  globalRenderCache.delete(handle);
+}
+
 interface Props {
   handle: string;
   pageCount: number;
@@ -26,9 +35,19 @@ export default function DocumentViewer(props: Props) {
   const [activePage, setActivePage] = createSignal(props.initialPage ?? 0);
   const [pageDims, setPageDims] = createSignal<[number, number][]>([]);
 
-  // Full-size page renders
+  // Full-size page renders — restore from global cache on mount
   const renderedPages = new Map<number, ImageData>();
-  const [renderVersion, setRenderVersion] = createSignal(0);
+  const cached = globalRenderCache.get(props.handle);
+  if (cached) {
+    for (const [page, img] of cached) renderedPages.set(page, img);
+  }
+  // Ensure global cache entry exists for this handle
+  if (!globalRenderCache.has(props.handle)) {
+    globalRenderCache.set(props.handle, new Map());
+  }
+  const renderCache = globalRenderCache.get(props.handle)!;
+
+  const [renderVersion, setRenderVersion] = createSignal(cached ? 1 : 0);
   const pageImages = () => { renderVersion(); return renderedPages; };
 
   // Sidebar thumbnails
@@ -51,13 +70,16 @@ export default function DocumentViewer(props: Props) {
     fullPageObserver?.disconnect();
   });
 
-  // Fetch page dimensions and start thumbnail loading
+  // Start thumbnail loading first — cache restore is synchronous so
+  // cached thumbnails are available on the first reactive flush.
+  loadAll();
+
+  // Fetch page dimensions (independent, doesn't block thumbnails)
   (async () => {
     try {
       const dim0 = await pdfWorker.getPageDimensions(props.handle, 0);
       setPageDims(Array.from({ length: props.pageCount }, () => dim0));
     } catch { /* use default aspect ratio */ }
-    loadAll();
   })();
 
   // Scroll active thumbnail into view
@@ -137,7 +159,10 @@ export default function DocumentViewer(props: Props) {
         if (cancelled) break;
         for (let j = 0; j < batch.length; j++) {
           const img = results[j];
-          if (img) renderedPages.set(batch[j], img);
+          if (img) {
+            renderedPages.set(batch[j], img);
+            renderCache.set(batch[j], img);
+          }
         }
         setRenderVersion((v) => v + 1);
       } catch { /* skip */ }
@@ -166,7 +191,10 @@ export default function DocumentViewer(props: Props) {
           if (cancelled) break;
           for (let j = 0; j < batch.length; j++) {
             const img = results[j];
-            if (img) renderedPages.set(batch[j], img);
+            if (img) {
+              renderedPages.set(batch[j], img);
+              renderCache.set(batch[j], img);
+            }
           }
           setRenderVersion((v) => v + 1);
         } catch { /* skip */ }

@@ -1,59 +1,34 @@
-import { createSignal, Show, onCleanup } from "solid-js";
-import * as pdfWorker from "../pdf-worker-client";
-import { getRenderPool } from "../render-pool";
+import { createSignal, createEffect, Show, on } from "solid-js";
 import DropZone from "./ui/DropZone";
 import DocumentViewer from "./ui/DocumentViewer";
+import { useSharedPdf } from "../PdfContext";
 
-export default function PdfViewer() {
+export default function PdfViewer(props: { onActivePageChange?: (page: number) => void }) {
+  const { sharedPdf, loadFile } = useSharedPdf();
   const [handle, setHandle] = createSignal<string | null>(null);
-  const [fileName, setFileName] = createSignal("");
   const [pageCount, setPageCount] = createSignal(0);
   const [error, setError] = createSignal("");
-  const [activePage, setActivePage] = createSignal(0);
 
-  onCleanup(() => {
-    const h = handle();
-    if (h) {
-      pdfWorker.unloadDocument(h);
-      getRenderPool().unload(h);
+  // Sync from shared PDF when it changes
+  createEffect(on(sharedPdf, (pdf) => {
+    if (pdf) {
+      setHandle(pdf.handle);
+      setPageCount(pdf.pageCount);
+      setError("");
+    } else {
+      setHandle(null);
+      setPageCount(0);
     }
-  });
+  }));
 
   async function handleFiles(files: File[]) {
     if (!files.length) return;
-    const prevHandle = handle();
-    if (prevHandle) {
-      pdfWorker.unloadDocument(prevHandle);
-      getRenderPool().unload(prevHandle);
-    }
-    setHandle(null);
-    setPageCount(0);
-    setActivePage(0);
     setError("");
-
-    const file = files[0];
-    setFileName(file.name);
     try {
-      const data = await file.arrayBuffer();
-      const result = await pdfWorker.loadDocument(data);
-      setHandle(result.handle);
-      setPageCount(result.pageCount);
+      await loadFile(files[0]);
     } catch (err: any) {
       setError(err.message || "Failed to load PDF");
     }
-  }
-
-  function closeDocument() {
-    const h = handle();
-    if (h) {
-      pdfWorker.unloadDocument(h);
-      getRenderPool().unload(h);
-    }
-    setHandle(null);
-    setPageCount(0);
-    setFileName("");
-    setActivePage(0);
-    setError("");
   }
 
   return (
@@ -77,17 +52,8 @@ export default function PdfViewer() {
         <DocumentViewer
           handle={handle()!}
           pageCount={pageCount()}
-          onActivePageChange={setActivePage}
+          onActivePageChange={props.onActivePageChange}
         />
-
-        <div class="flex items-center justify-between px-3 py-1 border-t border-gray-200 bg-gray-50 shrink-0">
-          <p class="text-xs text-gray-500">
-            {fileName()} — Page {activePage() + 1} of {pageCount()}
-          </p>
-          <button onClick={closeDocument} class="text-xs text-gray-500 hover:underline">
-            Close
-          </button>
-        </div>
       </Show>
     </div>
   );

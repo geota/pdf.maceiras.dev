@@ -1,6 +1,6 @@
 import { For } from "solid-js";
 
-export type Route = "view" | "merge" | "split" | "reorder" | "metadata";
+export type Route = "view" | "merge" | "split" | "reorder" | "compress" | "metadata";
 
 interface NavItem {
   route: Route;
@@ -12,6 +12,7 @@ const navItems: NavItem[] = [
   { route: "merge", label: "Merge" },
   { route: "split", label: "Split" },
   { route: "reorder", label: "Reorder" },
+  { route: "compress", label: "Compress" },
   { route: "metadata", label: "Metadata" },
 ];
 

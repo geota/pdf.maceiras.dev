@@ -191,6 +191,125 @@ const workerApi = {
     return api!.getMetadata(getDoc(handle));
   },
 
+  /** Analyze a loaded document's images. Returns stats for UI. */
+  async analyzePdf(
+    handle: string
+  ): Promise<{
+    max_dpi: number | null;
+    estimated_jpeg_quality: number | null;
+    jpeg_image_count: number;
+    non_jpeg_image_count: number;
+    total_image_count: number;
+  }> {
+    await initialize();
+    return (api as any).analyzePdf(getDoc(handle));
+  },
+
+  /** Compress a loaded document. Returns compressed PDF + compression report. */
+  async compressPdf(
+    handle: string,
+    options?: {
+      preset?: "lossless" | "low" | "medium" | "high" | "advanced";
+      strip_metadata?: boolean;
+      grayscale?: boolean;
+      advanced?: {
+        mode: "direct" | "target_size";
+        dpi?: number;
+        jpeg_quality?: number;
+        jp2?: boolean;
+        target_bytes?: number;
+        min_dpi?: number;
+        min_jpeg_quality?: number;
+      };
+    }
+  ): Promise<{
+    data: ArrayBuffer;
+    result: {
+      original_size: number;
+      compressed_size: number;
+      techniques_applied: string[];
+      target_met: boolean;
+    };
+  }> {
+    await initialize();
+    const doc = getDoc(handle);
+    const res = api!.compressPdf(
+      doc,
+      options ?? null
+    );
+    const data = (res as any).data as Uint8Array;
+    const buf = data.buffer as ArrayBuffer;
+    return {
+      data: Comlink.transfer(buf, [buf]) as unknown as ArrayBuffer,
+      result: (res as any).result,
+    };
+  },
+
+  // --- Parallel compression ---
+
+  /** Phase 1: structural lossless + extract image tasks. */
+  async compressBegin(
+    handle: string,
+    options?: Record<string, unknown>
+  ): Promise<{
+    complete: boolean;
+    imageTasks?: unknown[];
+  }> {
+    await initialize();
+    return (api as any).compressBegin(getDoc(handle), options ?? null);
+  },
+
+  /** Process a single image task (called by pool workers). */
+  async processImageTask(task: unknown): Promise<unknown | null> {
+    await initialize();
+    return (api as any).processImageTask(task);
+  },
+
+  /** Process an image task with transferred bytes (zero-copy).
+   *  Meta contains task fields except image_bytes; bytes is a transferred ArrayBuffer. */
+  async processImageTaskWithTransfer(
+    meta: unknown,
+    bytes: ArrayBuffer
+  ): Promise<unknown | null> {
+    await initialize();
+    // Reconstruct the full task object with the transferred bytes
+    const task = { ...(meta as any), image_bytes: new Uint8Array(bytes) };
+    return (api as any).processImageTask(task);
+  },
+
+  /** Target-size step: apply results, return next tasks or signal completion. */
+  async compressTargetStep(
+    results: unknown[]
+  ): Promise<{
+    complete: boolean;
+    imageTasks?: unknown[];
+  }> {
+    await initialize();
+    return (api as any).compressTargetStep(results);
+  },
+
+  /** Phase 3: apply image results and finalize. */
+  async compressFinish(
+    results: unknown[]
+  ): Promise<{
+    data: ArrayBuffer;
+    result: {
+      original_size: number;
+      compressed_size: number;
+      techniques_applied: string[];
+      target_met: boolean;
+    };
+  }> {
+    await initialize();
+    const res = (api as any).compressFinish(results);
+    const data = (res as any).data as Uint8Array;
+    const buf = data.buffer as ArrayBuffer;
+    return {
+      data: Comlink.transfer(buf, [buf]) as unknown as ArrayBuffer,
+      result: (res as any).result,
+    };
+  },
+
   /** Set metadata on a loaded document. Returns new PDF as ArrayBuffer. */
   async setMetadata(
     handle: string,

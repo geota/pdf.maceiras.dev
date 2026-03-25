@@ -65,13 +65,136 @@ pub fn set_metadata(data: &[u8], metadata: JsValue) -> Result<Vec<u8>, JsError> 
     doc.to_bytes().map_err(|e| JsError::new(&e.to_string()))
 }
 
+#[wasm_bindgen(js_name = "compressPdf")]
+pub fn compress_pdf(data: &[u8], options: JsValue) -> Result<JsValue, JsError> {
+    let opts: pdf_core::CompressOptions = if options.is_null() || options.is_undefined() {
+        pdf_core::CompressOptions::default()
+    } else {
+        serde_wasm_bindgen::from_value(options).map_err(|e| JsError::new(&e.to_string()))?
+    };
+
+    let (compressed_bytes, result) =
+        pdf_core::compress::compress_bytes(data, &opts).map_err(|e| JsError::new(&e.to_string()))?;
+
+    // Return { data: Uint8Array, result: CompressionResult }
+    let obj = js_sys::Object::new();
+    let typed = js_sys::Uint8Array::from(compressed_bytes.as_slice());
+    js_sys::Reflect::set(&obj, &"data".into(), &typed).unwrap();
+    let result_js =
+        serde_wasm_bindgen::to_value(&result).map_err(|e| JsError::new(&e.to_string()))?;
+    js_sys::Reflect::set(&obj, &"result".into(), &result_js).unwrap();
+    Ok(obj.into())
+}
+
+#[wasm_bindgen(js_name = "analyzePdf")]
+pub fn analyze_pdf(data: &[u8]) -> Result<JsValue, JsError> {
+    let analysis =
+        pdf_core::compress::analyze_pdf(data).map_err(|e| JsError::new(&e.to_string()))?;
+    serde_wasm_bindgen::to_value(&analysis).map_err(|e| JsError::new(&e.to_string()))
+}
+
+// --- Parallel Compression ---
+
+/// Phase 1: structural lossless + extract image tasks.
+/// Returns { complete: boolean, imageTasks?: ImageTask[] }
+/// If complete=true, call compressFinish([]) to get the result.
+/// If complete=false, process imageTasks in parallel, then call compressFinish(results).
+#[wasm_bindgen(js_name = "compressBegin")]
+pub fn compress_begin(data: &[u8], options: JsValue) -> Result<JsValue, JsError> {
+    let opts: pdf_core::CompressOptions = if options.is_null() || options.is_undefined() {
+        pdf_core::CompressOptions::default()
+    } else {
+        serde_wasm_bindgen::from_value(options).map_err(|e| JsError::new(&e.to_string()))?
+    };
+
+    let tasks = pdf_core::compress::compress_begin(data, &opts)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+
+    let obj = js_sys::Object::new();
+    match tasks {
+        None => {
+            js_sys::Reflect::set(&obj, &"complete".into(), &true.into()).unwrap();
+        }
+        Some(tasks) => {
+            js_sys::Reflect::set(&obj, &"complete".into(), &false.into()).unwrap();
+            let tasks_js = serde_wasm_bindgen::to_value(&tasks)
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            js_sys::Reflect::set(&obj, &"imageTasks".into(), &tasks_js).unwrap();
+        }
+    }
+    Ok(obj.into())
+}
+
+/// Process a single image task. Called by pool workers.
+#[wasm_bindgen(js_name = "processImageTask")]
+pub fn process_image_task(task: JsValue) -> Result<JsValue, JsError> {
+    let task: pdf_core::ImageTask =
+        serde_wasm_bindgen::from_value(task).map_err(|e| JsError::new(&e.to_string()))?;
+    match pdf_core::image_opt::process_image_task(&task) {
+        Some(result) => {
+            serde_wasm_bindgen::to_value(&result).map_err(|e| JsError::new(&e.to_string()))
+        }
+        None => Ok(JsValue::NULL),
+    }
+}
+
+/// Target-size step: apply previous results, return next step's tasks or null if done.
+/// Returns { complete: boolean, imageTasks?: ImageTask[] }
+#[wasm_bindgen(js_name = "compressTargetStep")]
+pub fn compress_target_step(results: JsValue) -> Result<JsValue, JsError> {
+    let results: Vec<pdf_core::ImageTaskResult> = if results.is_null() || results.is_undefined() {
+        Vec::new()
+    } else {
+        serde_wasm_bindgen::from_value(results).map_err(|e| JsError::new(&e.to_string()))?
+    };
+
+    let tasks = pdf_core::compress::compress_target_step(results)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+
+    let obj = js_sys::Object::new();
+    match tasks {
+        None => {
+            js_sys::Reflect::set(&obj, &"complete".into(), &true.into()).unwrap();
+        }
+        Some(tasks) => {
+            js_sys::Reflect::set(&obj, &"complete".into(), &false.into()).unwrap();
+            let tasks_js = serde_wasm_bindgen::to_value(&tasks)
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            js_sys::Reflect::set(&obj, &"imageTasks".into(), &tasks_js).unwrap();
+        }
+    }
+    Ok(obj.into())
+}
+
+/// Phase 3: apply image results and finalize.
+/// Pass the results from processImageTask calls (or empty array if phase1 was complete).
+#[wasm_bindgen(js_name = "compressFinish")]
+pub fn compress_finish(results: JsValue) -> Result<JsValue, JsError> {
+    let results: Vec<pdf_core::ImageTaskResult> = if results.is_null() || results.is_undefined() {
+        Vec::new()
+    } else {
+        serde_wasm_bindgen::from_value(results).map_err(|e| JsError::new(&e.to_string()))?
+    };
+
+    let (compressed_bytes, result) = pdf_core::compress::compress_finish(results)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+
+    let obj = js_sys::Object::new();
+    let typed = js_sys::Uint8Array::from(compressed_bytes.as_slice());
+    js_sys::Reflect::set(&obj, &"data".into(), &typed).unwrap();
+    let result_js =
+        serde_wasm_bindgen::to_value(&result).map_err(|e| JsError::new(&e.to_string()))?;
+    js_sys::Reflect::set(&obj, &"result".into(), &result_js).unwrap();
+    Ok(obj.into())
+}
+
 // --- PDF Rendering (pdfium-render) ---
 
 // Cache Pdfium instance — WASM is single-threaded so this is safe.
 // Avoids re-initializing Pdfium bindings on every call.
 use std::cell::RefCell;
 thread_local! {
-    static PDFIUM: RefCell<Option<pdfium_render::prelude::Pdfium>> = RefCell::new(None);
+    static PDFIUM: RefCell<Option<pdfium_render::prelude::Pdfium>> = const { RefCell::new(None) };
 }
 
 fn with_pdfium<T>(f: impl FnOnce(&pdfium_render::prelude::Pdfium) -> T) -> T {

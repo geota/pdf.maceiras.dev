@@ -1,8 +1,10 @@
-import { createSignal, Show, onCleanup } from "solid-js";
+import { createSignal, createEffect, Show, on } from "solid-js";
 import * as pdfWorker from "../pdf-worker-client";
 import DropZone from "./ui/DropZone";
+import { useSharedPdf } from "../PdfContext";
 
 export default function PdfMetadata() {
+  const { sharedPdf, loadFile, loadFromBytes } = useSharedPdf();
   const [handle, setHandle] = createSignal<string | null>(null);
   const [fileName, setFileName] = createSignal("");
   const [title, setTitle] = createSignal("");
@@ -13,32 +15,37 @@ export default function PdfMetadata() {
   const [error, setError] = createSignal("");
   const [success, setSuccess] = createSignal("");
 
-  onCleanup(() => {
-    const h = handle();
-    if (h) pdfWorker.unloadDocument(h);
-  });
+  // Sync from shared PDF
+  createEffect(on(sharedPdf, (pdf) => {
+    if (pdf) {
+      setHandle(pdf.handle);
+      setFileName(pdf.fileName);
+      setError("");
+      setSuccess("");
+      // Fetch metadata
+      pdfWorker.getMetadata(pdf.handle).then((meta) => {
+        setTitle(meta.title ?? "");
+        setAuthor(meta.author ?? "");
+        setSubject(meta.subject ?? "");
+        setKeywords(meta.keywords ?? "");
+      });
+    } else {
+      setHandle(null);
+      setFileName("");
+      setTitle("");
+      setAuthor("");
+      setSubject("");
+      setKeywords("");
+    }
+  }));
 
   async function handleFiles(files: File[]) {
     const file = files[0];
     if (!file) return;
-
-    const prev = handle();
-    if (prev) pdfWorker.unloadDocument(prev);
-
     setError("");
     setSuccess("");
-    setFileName(file.name);
-
     try {
-      const data = await file.arrayBuffer();
-      const result = await pdfWorker.loadDocument(data);
-      setHandle(result.handle);
-
-      const meta = await pdfWorker.getMetadata(result.handle);
-      setTitle(meta.title ?? "");
-      setAuthor(meta.author ?? "");
-      setSubject(meta.subject ?? "");
-      setKeywords(meta.keywords ?? "");
+      await loadFile(file);
     } catch (err: any) {
       setError(err.message || "Failed to load PDF");
     }
@@ -58,15 +65,8 @@ export default function PdfMetadata() {
         subject: subject() || null,
         keywords: keywords() || null,
       });
-
-      const blob = new Blob([result], { type: "application/pdf" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = fileName();
-      a.click();
-      URL.revokeObjectURL(url);
-      setSuccess("Saved and downloaded.");
+      await loadFromBytes(result, fileName());
+      setSuccess("Metadata updated.");
     } catch (err: any) {
       setError(err.message || "Failed to save metadata");
     } finally {
@@ -76,11 +76,13 @@ export default function PdfMetadata() {
 
   return (
     <div>
-      <DropZone onFiles={handleFiles} accept=".pdf">
-        <p class="text-sm text-gray-500">
-          <span class="font-medium">Drop a PDF here</span> or click to browse
-        </p>
-      </DropZone>
+      <Show when={!handle()}>
+        <DropZone onFiles={handleFiles} accept=".pdf">
+          <p class="text-sm text-gray-500">
+            <span class="font-medium">Drop a PDF here</span> or click to browse
+          </p>
+        </DropZone>
+      </Show>
 
       <Show when={handle()}>
         <div class="mt-4 space-y-4 max-w-md">
@@ -96,7 +98,7 @@ export default function PdfMetadata() {
             disabled={saving()}
             class="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-50 text-sm font-medium"
           >
-            {saving() ? "Saving..." : "Save & Download"}
+            {saving() ? "Saving..." : "Save metadata"}
           </button>
 
           <Show when={success()}>

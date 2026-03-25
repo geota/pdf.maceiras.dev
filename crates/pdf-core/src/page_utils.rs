@@ -85,10 +85,8 @@ fn finalize_imported_page(target: &mut Document, new_page_id: ObjectId) -> Resul
         .get_object_mut(pages_id)
         .and_then(|o| o.as_dict_mut())
     {
-        if let Ok(kids) = pages_dict.get_mut(b"Kids") {
-            if let Object::Array(ref mut arr) = kids {
-                arr.push(Object::Reference(new_page_id));
-            }
+        if let Ok(Object::Array(ref mut arr)) = pages_dict.get_mut(b"Kids") {
+            arr.push(Object::Reference(new_page_id));
         }
         if let Ok(count) = pages_dict.get(b"Count") {
             if let Ok(n) = count.as_i64() {

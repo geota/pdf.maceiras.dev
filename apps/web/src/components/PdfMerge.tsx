@@ -1,4 +1,4 @@
-import { createSignal, For, Show, onCleanup } from "solid-js";
+import { createSignal, createEffect, For, Show, on } from "solid-js";
 import {
   DragDropProvider,
   DragDropSensors,
@@ -9,6 +9,8 @@ import {
 } from "@thisbeyond/solid-dnd";
 import * as pdfWorker from "../pdf-worker-client";
 import DropZone from "./ui/DropZone";
+import { useSharedPdf } from "../PdfContext";
+import { getThumbnailFromCache } from "../hooks/useThumbnails";
 
 interface LoadedPdf {
   id: string;
@@ -16,20 +18,52 @@ interface LoadedPdf {
   handle: string;
   pageCount: number;
   thumbnail: ImageData | null;
+  isShared: boolean;
 }
 
 let nextId = 0;
 
 export default function PdfMerge() {
+  const { sharedPdf, loadFromBytes } = useSharedPdf();
   const [files, setFiles] = createSignal<LoadedPdf[]>([]);
   const [merging, setMerging] = createSignal(false);
   const [error, setError] = createSignal("");
 
-  onCleanup(() => {
-    for (const f of files()) {
-      pdfWorker.unloadDocument(f.handle);
+  // When shared PDF is available, add it as the first file
+  createEffect(on(sharedPdf, (pdf) => {
+    // Remove any previously-added shared file
+    setFiles((prev) => {
+      const sharedFiles = prev.filter((f) => f.isShared);
+      for (const f of sharedFiles) {
+        // Don't unload the shared handle — context owns it
+      }
+      return prev.filter((f) => !f.isShared);
+    });
+
+    if (pdf) {
+      const id = `merge_${nextId++}`;
+      const cached = getThumbnailFromCache(pdf.handle, 0);
+      if (cached) {
+        setFiles((prev) => [{
+          id, name: pdf.fileName, handle: pdf.handle,
+          pageCount: pdf.pageCount, thumbnail: cached, isShared: true,
+        }, ...prev]);
+      } else {
+        // Cache miss — render and add async
+        pdfWorker.renderPage(pdf.handle, 0, 120).then((thumbnail) => {
+          setFiles((prev) => [{
+            id, name: pdf.fileName, handle: pdf.handle,
+            pageCount: pdf.pageCount, thumbnail, isShared: true,
+          }, ...prev]);
+        }).catch(() => {
+          setFiles((prev) => [{
+            id, name: pdf.fileName, handle: pdf.handle,
+            pageCount: pdf.pageCount, thumbnail: null, isShared: true,
+          }, ...prev]);
+        });
+      }
     }
-  });
+  }));
 
   async function handleFiles(newFiles: File[]) {
     setError("");
@@ -46,7 +80,7 @@ export default function PdfMerge() {
         }
 
         const id = `merge_${nextId++}`;
-        setFiles((prev) => [...prev, { id, name: file.name, handle, pageCount, thumbnail }]);
+        setFiles((prev) => [...prev, { id, name: file.name, handle, pageCount, thumbnail, isShared: false }]);
       } catch (err: any) {
         setError(err.message || `Failed to load ${file.name}`);
       }
@@ -56,7 +90,7 @@ export default function PdfMerge() {
   function removeFile(id: string) {
     setFiles((prev) => {
       const item = prev.find((f) => f.id === id);
-      if (item) pdfWorker.unloadDocument(item.handle);
+      if (item && !item.isShared) pdfWorker.unloadDocument(item.handle);
       return prev.filter((f) => f.id !== id);
     });
   }
@@ -85,13 +119,11 @@ export default function PdfMerge() {
     setError("");
     try {
       const merged = await pdfWorker.mergePdfs(list.map((f) => f.handle));
-      const blob = new Blob([merged], { type: "application/pdf" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "merged.pdf";
-      a.click();
-      URL.revokeObjectURL(url);
+      for (const f of list) {
+        if (!f.isShared) pdfWorker.unloadDocument(f.handle);
+      }
+      setFiles([]);
+      await loadFromBytes(merged, "merged.pdf");
     } catch (err: any) {
       setError(err.message || "Merge failed");
     } finally {
@@ -105,6 +137,11 @@ export default function PdfMerge() {
         <p class="text-sm text-gray-500">
           <span class="font-medium">Drop PDF files here</span> or click to
           browse
+          <Show when={sharedPdf()}>
+            <span class="block text-xs text-blue-500 mt-1">
+              Your current PDF is already included below. Add more to merge.
+            </span>
+          </Show>
         </p>
       </DropZone>
 
@@ -165,7 +202,10 @@ function SortableItem(props: {
         requestAnimationFrame(renderThumb);
       }}
       class="flex items-center gap-3 bg-white border border-gray-200 rounded-lg p-3 shadow-sm cursor-grab active:cursor-grabbing"
-      classList={{ "opacity-50": sortable.isActiveDraggable }}
+      classList={{
+        "opacity-50": sortable.isActiveDraggable,
+        "border-blue-300 bg-blue-50/30": props.file.isShared,
+      }}
     >
       <Show
         when={props.file.thumbnail}
@@ -180,7 +220,12 @@ function SortableItem(props: {
         />
       </Show>
       <div class="flex-1 min-w-0">
-        <p class="text-sm font-medium truncate">{props.file.name}</p>
+        <p class="text-sm font-medium truncate">
+          {props.file.name}
+          <Show when={props.file.isShared}>
+            <span class="ml-1 text-xs text-blue-500">(current)</span>
+          </Show>
+        </p>
         <p class="text-xs text-gray-400">
           {props.file.pageCount} page{props.file.pageCount !== 1 ? "s" : ""}
         </p>

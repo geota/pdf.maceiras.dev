@@ -1,4 +1,4 @@
-import { createSignal, createMemo, For, onCleanup, Show } from "solid-js";
+import { createSignal, createEffect, createMemo, For, Show, onCleanup, on } from "solid-js";
 import * as pdfWorker from "../pdf-worker-client";
 import { getRenderPool } from "../render-pool";
 import DropZone from "./ui/DropZone";
@@ -7,6 +7,7 @@ import PagePreview from "./ui/PagePreview";
 import MergeStep from "./ui/MergeStep";
 import { useThumbnails } from "../hooks/useThumbnails";
 import { groupToText, parseFullExpression, removePageFromSegmentText, compactSegment } from "../lib/page-ranges";
+import { useSharedPdf } from "../PdfContext";
 
 // Colors for groups — border + ring classes
 const GROUP_COLORS = [
@@ -30,6 +31,7 @@ let nextGroupId = 0;
 
 
 export default function PdfSplit() {
+  const { sharedPdf, loadFile } = useSharedPdf();
   const [handle, setHandle] = createSignal<string | null>(null);
   const [fileName, setFileName] = createSignal("");
   const [pageCount, setPageCount] = createSignal(0);
@@ -44,10 +46,24 @@ export default function PdfSplit() {
 
   const { thumbnails, loading: thumbsLoading, loadAll, updateVisiblePages } = useThumbnails(handle, pageCount);
 
-  onCleanup(() => {
-    const h = handle();
-    if (h) pdfWorker.unloadDocument(h);
-  });
+  // Sync from shared PDF
+  createEffect(on(sharedPdf, (pdf) => {
+    if (pdf) {
+      setHandle(pdf.handle);
+      setFileName(pdf.fileName);
+      setPageCount(pdf.pageCount);
+      setGroups([]);
+      setActiveGroupId(null);
+      setVisibleGroupIds(new Set<number>());
+      setRangeText("");
+      setError("");
+      setPendingFiles(null);
+      addGroup();
+      loadAll();
+    } else {
+      resetState();
+    }
+  }));
 
   // Map from page index -> list of group indices it belongs to (deduplicated)
   const pageGroupsMap = createMemo(() => {
@@ -148,8 +164,6 @@ export default function PdfSplit() {
   }
 
   function resetState() {
-    const prev = handle();
-    if (prev) pdfWorker.unloadDocument(prev);
     setHandle(null);
     setFileName("");
     setPageCount(0);
@@ -171,16 +185,11 @@ export default function PdfSplit() {
       return;
     }
 
-    // Single file — load directly
+    // Single file — load via shared context
     const file = files[0];
-    setFileName(file.name);
+    setError("");
     try {
-      const data = await file.arrayBuffer();
-      const result = await pdfWorker.loadDocument(data);
-      setHandle(result.handle);
-      setPageCount(result.pageCount);
-      addGroup();
-      loadAll();
+      await loadFile(file);
     } catch (err: any) {
       setError(err.message || "Failed to load PDF");
     }
@@ -379,12 +388,6 @@ export default function PdfSplit() {
               {fileName()} — {pageCount()} pages
               {thumbsLoading() ? " (loading thumbnails...)" : ""}
             </p>
-            <button
-              onClick={resetState}
-              class="text-xs text-gray-500 hover:underline"
-            >
-              Start over
-            </button>
           </div>
 
           {/* Group controls */}
@@ -518,6 +521,7 @@ export default function PdfSplit() {
       <Show when={previewPage() != null && handle()}>
         <PagePreview
           handle={handle()!}
+          fileName={fileName()}
           pageCount={pageCount()}
           pageIndex={previewPage()!}
           onClose={() => setPreviewPage(null)}

@@ -1,4 +1,4 @@
-import { createSignal, createEffect, For, Show, onCleanup, onMount } from "solid-js";
+import { createSignal, createEffect, For, Show, onCleanup, onMount, on } from "solid-js";
 import {
   DragDropProvider,
   DragDropSensors,
@@ -13,6 +13,7 @@ import MergeStep from "./ui/MergeStep";
 import { useThumbnails } from "../hooks/useThumbnails";
 import { parseGroupSegment, groupToText } from "../lib/page-ranges";
 import PagePreview from "./ui/PagePreview";
+import { useSharedPdf } from "../PdfContext";
 
 interface PageItem {
   uid: string;
@@ -25,6 +26,7 @@ function makeUid() {
 }
 
 export default function PdfReorder() {
+  const { sharedPdf, loadFile, loadFromBytes } = useSharedPdf();
   const [handle, setHandle] = createSignal<string | null>(null);
   const [fileName, setFileName] = createSignal("");
   const [pageCount, setPageCount] = createSignal(0);
@@ -79,14 +81,24 @@ export default function PdfReorder() {
     observer?.disconnect();
   });
 
-  onCleanup(() => {
-    const h = handle();
-    if (h) pdfWorker.unloadDocument(h);
-  });
+  // Sync from shared PDF
+  createEffect(on(sharedPdf, (pdf) => {
+    if (pdf) {
+      initFromDocument(pdf.handle, pdf.pageCount, pdf.fileName);
+    } else {
+      setHandle(null);
+      setFileName("");
+      setPageCount(0);
+      setItems([]);
+      setSelectedUids(new Set<string>());
+      setOrderText("");
+      setError("");
+      setPendingFiles(null);
+      lastClickedUid = null;
+    }
+  }));
 
   function resetState() {
-    const prev = handle();
-    if (prev) pdfWorker.unloadDocument(prev);
     setHandle(null);
     setFileName("");
     setPageCount(0);
@@ -123,9 +135,7 @@ export default function PdfReorder() {
     const file = files[0];
     setError("");
     try {
-      const data = await file.arrayBuffer();
-      const result = await pdfWorker.loadDocument(data);
-      initFromDocument(result.handle, result.pageCount, file.name);
+      await loadFile(file);
     } catch (err: any) {
       setError(err.message || "Failed to load PDF");
     }
@@ -253,14 +263,8 @@ export default function PdfReorder() {
     try {
       const order = items().map((it) => it.pageIdx);
       const result = await pdfWorker.reorderPages(h, order);
-      const blob = new Blob([result], { type: "application/pdf" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
       const baseName = fileName().replace(/\.pdf$/i, "");
-      a.download = `${baseName}_reordered.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
+      await loadFromBytes(result, `${baseName}_reordered.pdf`);
     } catch (err: any) {
       setError(err.message || "Reorder failed");
     } finally {
@@ -325,12 +329,6 @@ export default function PdfReorder() {
                   Reset
                 </button>
               </Show>
-              <button
-                onClick={resetState}
-                class="text-xs text-gray-500 hover:underline"
-              >
-                Start over
-              </button>
             </div>
           </div>
 
@@ -386,7 +384,7 @@ export default function PdfReorder() {
                 disabled={saving()}
                 class="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-50 text-sm font-medium"
               >
-                {saving() ? "Saving..." : "Save reordered PDF"}
+                {saving() ? "Saving..." : "Apply reorder"}
               </button>
             </div>
           </Show>
@@ -402,6 +400,7 @@ export default function PdfReorder() {
       <Show when={previewPage() != null && handle()}>
         <PagePreview
           handle={handle()!}
+          fileName={fileName()}
           pageCount={pageCount()}
           pageIndex={previewPage()!}
           onClose={() => setPreviewPage(null)}

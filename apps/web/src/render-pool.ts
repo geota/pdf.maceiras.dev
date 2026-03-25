@@ -124,6 +124,59 @@ class RenderPool {
     return this.workers.length;
   }
 
+  /** Process image tasks in parallel across pool workers (work-stealing).
+   *  Each worker pulls the next available task when idle, ensuring
+   *  even load distribution regardless of per-image processing cost.
+   *  Uses Comlink.transfer() for image bytes to avoid structured clone copies.
+   *  Optional onProgress callback reports (completed, total) after each task. */
+  async processImageTasks(
+    tasks: unknown[],
+    onProgress?: (completed: number, total: number) => void
+  ): Promise<unknown[]> {
+    await this.initPromise;
+    const results: unknown[] = [];
+    let nextTask = 0;
+    let completed = 0;
+    const total = tasks.length;
+
+    // Pre-split tasks: extract image_bytes as transferable ArrayBuffers
+    const splitTasks = (tasks as any[]).map((task) => {
+      const bytes = task.image_bytes;
+      // Create a lightweight metadata copy without the heavy bytes
+      const meta = { ...task, image_bytes: null };
+      // Convert to ArrayBuffer if it's a Uint8Array or similar
+      let buffer: ArrayBuffer;
+      if (bytes instanceof ArrayBuffer) {
+        buffer = bytes;
+      } else if (bytes && bytes.buffer instanceof ArrayBuffer) {
+        buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      } else if (Array.isArray(bytes)) {
+        buffer = new Uint8Array(bytes).buffer;
+      } else {
+        buffer = new ArrayBuffer(0);
+      }
+      return { meta, buffer };
+    });
+
+    const workerLoop = async (worker: Comlink.Remote<WorkerApi>) => {
+      while (true) {
+        const idx = nextTask++;  // JS is single-threaded, no race
+        if (idx >= splitTasks.length) break;
+        const { meta, buffer } = splitTasks[idx];
+        const result = await worker.processImageTaskWithTransfer(
+          meta,
+          Comlink.transfer(buffer, [buffer])
+        );
+        if (result != null) results.push(result);
+        completed++;
+        onProgress?.(completed, total);
+      }
+    };
+
+    await Promise.all(this.workers.map((w) => workerLoop(w)));
+    return results;
+  }
+
   /** Unload a document from all pool workers. */
   async unload(primaryHandle: string): Promise<void> {
     const poolHandle = this.handleMap.get(primaryHandle);
