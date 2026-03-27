@@ -115,6 +115,13 @@ pub fn analyze_pdf(data: &[u8]) -> Result<JsValue, JsError> {
     serde_wasm_bindgen::to_value(&analysis).map_err(|e| JsError::new(&e.to_string()))
 }
 
+#[wasm_bindgen(js_name = "analyzePdfDetailed")]
+pub fn analyze_pdf_detailed(data: &[u8]) -> Result<JsValue, JsError> {
+    let analysis =
+        pdf_core::compress::analyze_pdf_detailed(data).map_err(|e| JsError::new(&e.to_string()))?;
+    serde_wasm_bindgen::to_value(&analysis).map_err(|e| JsError::new(&e.to_string()))
+}
+
 // --- Parallel Compression ---
 
 /// Phase 1: structural lossless + extract image tasks.

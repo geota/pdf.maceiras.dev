@@ -1,6 +1,7 @@
 use lopdf::{dictionary, Document, Object, ObjectId, Stream};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::{PdfError, Result};
 use crate::image_opt::ImageTaskResult;
@@ -66,6 +67,9 @@ pub struct CompressOptions {
     /// Advanced sub-mode. Only used when `preset == Advanced`.
     #[serde(default)]
     pub advanced: Option<AdvancedMode>,
+    /// 0-based page indices for per-page image operations. If None, all pages.
+    #[serde(default)]
+    pub selected_pages: Option<Vec<u32>>,
 }
 
 fn default_true() -> bool { true }
@@ -88,6 +92,7 @@ impl Default for CompressOptions {
             strip_metadata: true,
             grayscale: false,
             advanced: None,
+            selected_pages: None,
         }
     }
 }
@@ -117,6 +122,13 @@ impl CompressOptions {
         };
         ResolvedSettings { dpi, jpeg_quality, jp2 }
     }
+
+    /// Build the per-page image filter set, or None if all pages are selected.
+    fn page_image_filter(&self, doc: &Document) -> Option<HashSet<ObjectId>> {
+        self.selected_pages.as_ref().map(|pages| {
+            crate::image_opt::collect_image_ids_for_pages(doc, pages)
+        })
+    }
 }
 
 /// Result of a compression operation.
@@ -139,22 +151,107 @@ pub struct PdfAnalysis {
     pub total_image_count: u32,
 }
 
+/// Per-page image analysis (surfaced to UI for page stats and used for compress filtering).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageAnalysis {
+    pub image_count: u32,
+    pub max_dpi: Option<f64>,
+    pub estimated_jpeg_quality: Option<u8>,
+    /// Estimated byte size of image streams on this page.
+    pub estimated_image_bytes: usize,
+    /// XObject IDs on this page — [obj_num, obj_gen] pairs for JS interop.
+    pub image_ids: Vec<[u32; 2]>,
+}
+
+/// Detailed analysis: global summary + per-page breakdown.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetailedAnalysis {
+    pub summary: PdfAnalysis,
+    pub pages: Vec<PageAnalysis>,
+}
+
 /// Analyze a PDF and return image statistics without modifying it.
 pub fn analyze_pdf(data: &[u8]) -> Result<PdfAnalysis> {
+    Ok(analyze_pdf_detailed(data)?.summary)
+}
+
+/// Detailed analysis: global summary + per-page image stats.
+/// Traverses the page tree and image objects exactly once.
+pub fn analyze_pdf_detailed(data: &[u8]) -> Result<DetailedAnalysis> {
     let doc = Document::load_mem(data)
         .map_err(|e| PdfError::InvalidPdf(e.to_string()))?;
-    // Collect once, share across all analysis functions
+
     let images = crate::image_opt::collect_images(&doc);
-    let page_sizes = crate::image_opt::collect_page_image_sizes(&doc);
-    let max_dpi = crate::image_opt::detect_max_dpi(&images, &page_sizes);
-    let estimated_jpeg_quality = crate::image_opt::estimate_jpeg_quality(&doc, &images);
-    let summary = crate::image_opt::collect_images_summary(&images);
-    Ok(PdfAnalysis {
-        max_dpi,
-        estimated_jpeg_quality,
-        jpeg_image_count: summary.jpeg_count,
-        non_jpeg_image_count: summary.non_jpeg_count,
-        total_image_count: summary.jpeg_count + summary.non_jpeg_count,
+    let page_image_map = crate::image_opt::build_page_image_map(&doc);
+    let page_dims = crate::image_opt::collect_page_dims(&doc);
+
+    // Index images by ObjectId for O(1) lookup
+    let image_index: std::collections::HashMap<ObjectId, &crate::image_opt::PdfImage> =
+        images.iter().map(|img| (img.id, img)).collect();
+
+    // Global stats (accumulated while building per-page)
+    let mut global_max_dpi: Option<f64> = None;
+    let mut global_best_quality: Option<u8> = None;
+    let mut global_jpeg_count = 0u32;
+    let mut global_non_jpeg_count = 0u32;
+
+    let mut page_analyses = Vec::with_capacity(page_image_map.len());
+
+    for (page_idx, xobj_ids) in page_image_map.iter().enumerate() {
+        let (page_w, page_h) = page_dims.get(page_idx).copied().unwrap_or((612.0, 792.0));
+        let mut page_max_dpi: Option<f64> = None;
+        let mut page_best_quality: Option<u8> = None;
+        let mut page_image_count = 0u32;
+        let mut page_image_bytes = 0usize;
+        let mut page_ids = Vec::new();
+
+        for &xobj_id in xobj_ids {
+            let Some(img) = image_index.get(&xobj_id) else { continue };
+            page_image_count += 1;
+            page_ids.push([xobj_id.0, xobj_id.1 as u32]);
+
+            // DPI for this image on this page
+            let dpi_x = img.width as f64 / (page_w / 72.0);
+            let dpi_y = img.height as f64 / (page_h / 72.0);
+            let eff_dpi = dpi_x.max(dpi_y);
+            page_max_dpi = Some(page_max_dpi.map_or(eff_dpi, |m: f64| m.max(eff_dpi)));
+            global_max_dpi = Some(global_max_dpi.map_or(eff_dpi, |m: f64| m.max(eff_dpi)));
+
+            // Stream size estimate
+            if let Some(Object::Stream(s)) = doc.objects.get(&xobj_id) {
+                page_image_bytes += s.content.len();
+
+                // JPEG quality estimate
+                if img.is_dct {
+                    let q = crate::image_opt::estimate_quality_from_dqt(&s.content);
+                    if let Some(q) = q {
+                        page_best_quality = Some(page_best_quality.map_or(q, |prev: u8| prev.max(q)));
+                        global_best_quality = Some(global_best_quality.map_or(q, |prev: u8| prev.max(q)));
+                    }
+                }
+            }
+
+            if img.is_dct { global_jpeg_count += 1; } else { global_non_jpeg_count += 1; }
+        }
+
+        page_analyses.push(PageAnalysis {
+            image_count: page_image_count,
+            max_dpi: page_max_dpi,
+            estimated_jpeg_quality: page_best_quality,
+            estimated_image_bytes: page_image_bytes,
+            image_ids: page_ids,
+        });
+    }
+
+    Ok(DetailedAnalysis {
+        summary: PdfAnalysis {
+            max_dpi: global_max_dpi,
+            estimated_jpeg_quality: global_best_quality,
+            jpeg_image_count: global_jpeg_count,
+            non_jpeg_image_count: global_non_jpeg_count,
+            total_image_count: global_jpeg_count + global_non_jpeg_count,
+        },
+        pages: page_analyses,
     })
 }
 
@@ -191,12 +288,13 @@ pub fn compress_bytes(data: &[u8], opts: &CompressOptions) -> Result<(Vec<u8>, C
     // Phase 2: Image processing
     // =======================================================================
     if is_target_size {
-        // Target-size path: apply grayscale first, then iterative loop
+        // Target-size path: apply grayscale first (filtered by selected pages), then iterative loop
         if opts.grayscale {
             log::info!("[compress] converting to grayscale...");
             let images = crate::image_opt::collect_images(&doc);
+            let allowed = opts.page_image_filter(&doc);
             let stats = crate::image_opt::process_images_single_pass(
-                &mut doc, &images, &[], None, None, false, true,
+                &mut doc, &images, &HashMap::new(), None, None, false, true, allowed.as_ref(),
             );
             if stats.grayscaled > 0 {
                 let msg = format!("Converted {} images to grayscale", stats.grayscaled);
@@ -219,6 +317,7 @@ pub fn compress_bytes(data: &[u8], opts: &CompressOptions) -> Result<(Vec<u8>, C
         // Single-pass: grayscale + downsample + encode in one decode cycle
         log::info!("[compress] single-pass image processing...");
         let images = crate::image_opt::collect_images(&doc);
+        let allowed = opts.page_image_filter(&doc);
         let page_sizes = crate::image_opt::collect_page_image_sizes(&doc);
         let stats = crate::image_opt::process_images_single_pass(
             &mut doc,
@@ -228,6 +327,7 @@ pub fn compress_bytes(data: &[u8], opts: &CompressOptions) -> Result<(Vec<u8>, C
             resolved.jpeg_quality,
             resolved.jp2,
             opts.grayscale,
+            allowed.as_ref(),
         );
         if stats.grayscaled > 0 {
             techniques.push(format!("Converted {} images to grayscale", stats.grayscaled));
@@ -280,6 +380,8 @@ enum ParallelState {
         min_dpi: f64,
         min_quality: f64,
         jp2: bool,
+        /// 0-based page indices for per-page filtering (None = all pages).
+        selected_pages: Option<Vec<u32>>,
     },
     /// Already complete (target-size or no-op) — just return the result.
     Complete {
@@ -342,7 +444,8 @@ pub fn compress_begin(
 
         // Extract lossless tasks for oxipng parallelization
         let images = crate::image_opt::collect_images(&doc);
-        let lossless_tasks = crate::image_opt::extract_lossless_image_tasks(&doc, &images);
+        let allowed = opts.page_image_filter(&doc);
+        let lossless_tasks = crate::image_opt::extract_lossless_image_tasks(&doc, &images, allowed.as_ref());
 
         PARALLEL_STATE.with(|state| {
             *state.borrow_mut() = Some(ParallelState::InProgress { doc: Box::new(doc), techniques, original_size });
@@ -359,6 +462,7 @@ pub fn compress_begin(
     // Extract image tasks for parallel processing
     let images = crate::image_opt::collect_images(&doc);
     let page_sizes = crate::image_opt::collect_page_image_sizes(&doc);
+    let allowed = opts.page_image_filter(&doc);
     let tasks = crate::image_opt::extract_image_tasks(
         &doc,
         &images,
@@ -367,6 +471,7 @@ pub fn compress_begin(
         resolved.jpeg_quality,
         resolved.jp2,
         opts.grayscale,
+        allowed.as_ref(),
     );
 
     if tasks.is_empty() {
@@ -519,11 +624,12 @@ fn compress_target_begin(
 
     apply_lossless_structural(&mut doc, opts.strip_metadata, &mut techniques);
 
-    // Apply grayscale upfront if requested
+    // Apply grayscale upfront if requested (filtered by selected pages)
     if opts.grayscale {
         let images = crate::image_opt::collect_images(&doc);
+        let allowed = opts.page_image_filter(&doc);
         let stats = crate::image_opt::process_images_single_pass(
-            &mut doc, &images, &[], None, None, false, true,
+            &mut doc, &images, &HashMap::new(), None, None, false, true, allowed.as_ref(),
         );
         if stats.grayscaled > 0 {
             techniques.push(format!("Converted {} images to grayscale", stats.grayscaled));
@@ -569,10 +675,12 @@ fn compress_target_begin(
     let min_quality = if jp2 { current_quality } else { min_jpeg_quality as f64 };
 
     // Try to extract tasks for the first step
+    let allowed = opts.page_image_filter(&doc);
     let tasks = extract_target_step_tasks(
         &doc, &images, &page_sizes,
         current_dpi, next_dpi, min_dpi,
         current_quality, next_quality, min_quality, jp2,
+        allowed.as_ref(),
     );
 
     PARALLEL_STATE.with(|state| {
@@ -588,6 +696,7 @@ fn compress_target_begin(
             min_dpi,
             min_quality,
             jp2,
+            selected_pages: opts.selected_pages.clone(),
         });
     });
 
@@ -613,14 +722,14 @@ pub fn compress_target_step(
 
     let (mut doc, mut techniques, original_size, target_bytes,
          mut current_dpi, mut next_dpi, mut current_quality, mut next_quality,
-         min_dpi, min_quality, jp2) = match state {
+         min_dpi, min_quality, jp2, selected_pages) = match state {
         ParallelState::TargetSizeInProgress {
             doc, techniques, original_size, target_bytes,
             current_dpi, next_dpi, current_quality, next_quality,
-            min_dpi, min_quality, jp2,
+            min_dpi, min_quality, jp2, selected_pages,
         } => (*doc, techniques, original_size, target_bytes,
               current_dpi, next_dpi, current_quality, next_quality,
-              min_dpi, min_quality, jp2),
+              min_dpi, min_quality, jp2, selected_pages),
         _ => return Err(PdfError::InvalidPdf("Expected TargetSizeInProgress state".into())),
     };
 
@@ -691,10 +800,14 @@ pub fn compress_target_step(
     // Try the next step
     let images = crate::image_opt::collect_images(&doc);
     let page_sizes = crate::image_opt::collect_page_image_sizes(&doc);
+    let allowed = selected_pages.as_ref().map(|pages| {
+        crate::image_opt::collect_image_ids_for_pages(&doc, pages)
+    });
     let tasks = extract_target_step_tasks(
         &doc, &images, &page_sizes,
         current_dpi, next_dpi, min_dpi,
         current_quality, next_quality, min_quality, jp2,
+        allowed.as_ref(),
     );
 
     if tasks.is_empty() {
@@ -725,6 +838,7 @@ pub fn compress_target_step(
             min_dpi,
             min_quality,
             jp2,
+            selected_pages,
         });
     });
 
@@ -737,7 +851,7 @@ pub fn compress_target_step(
 fn extract_target_step_tasks(
     doc: &Document,
     images: &[crate::image_opt::PdfImage],
-    page_sizes: &[(ObjectId, (f64, f64))],
+    page_sizes: &HashMap<ObjectId, (f64, f64)>,
     current_dpi: f64,
     next_dpi: f64,
     min_dpi: f64,
@@ -745,6 +859,7 @@ fn extract_target_step_tasks(
     next_quality: f64,
     min_quality: f64,
     jp2: bool,
+    allowed_ids: Option<&HashSet<ObjectId>>,
 ) -> Vec<crate::image_opt::ImageTask> {
     let can_step_dpi = next_dpi >= min_dpi && current_dpi > min_dpi;
     let can_step_quality = !jp2 && next_quality >= min_quality;
@@ -759,6 +874,7 @@ fn extract_target_step_tasks(
     crate::image_opt::extract_image_tasks(
         doc, images, page_sizes,
         target_dpi, jpeg_quality, false, false,
+        allowed_ids,
     )
 }
 

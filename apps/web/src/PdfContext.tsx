@@ -57,6 +57,9 @@ interface PdfContextValue {
   sharedPdf: () => SharedPdf | null;
   /** Pending per-page operations (ordered list per page). */
   pendingOps: () => Map<number, PageOp[]>;
+  /** Whether a full-screen page preview overlay is open. */
+  previewOpen: () => boolean;
+  setPreviewOpen: (open: boolean) => void;
   /** Load a PDF from a File object into shared state. */
   loadFile: (file: File) => Promise<void>;
   /** Load a PDF from raw bytes (e.g. compression result) into shared state. */
@@ -84,6 +87,7 @@ const PdfContext = createContext<PdfContextValue>();
 export const PdfProvider: ParentComponent = (props) => {
   const [sharedPdf, setSharedPdf] = createSignal<SharedPdf | null>(null);
   const [pendingOps, setPendingOps] = createSignal<Map<number, PageOp[]>>(new Map());
+  const [previewOpen, setPreviewOpen] = createSignal(false);
 
   function unloadCurrent() {
     const current = sharedPdf();
@@ -306,6 +310,8 @@ export const PdfProvider: ParentComponent = (props) => {
   const value: PdfContextValue = {
     sharedPdf,
     pendingOps,
+    previewOpen,
+    setPreviewOpen,
     loadFile,
     loadFromBytes,
     clear,

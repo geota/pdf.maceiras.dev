@@ -7,6 +7,7 @@ use image::codecs::jpeg::JpegEncoder;
 use image::{DynamicImage, ImageBuffer, ImageReader};
 use lopdf::{dictionary, Document, Object, ObjectId, Stream};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 
 /// Information about a PDF image XObject needed for optimization.
@@ -31,11 +32,10 @@ pub struct ImageProcessStats {
 }
 
 /// Compute effective DPI for an image given its display size on page.
-fn effective_dpi_for(img: &PdfImage, page_sizes: &[(ObjectId, (f64, f64))]) -> f64 {
+fn effective_dpi_for(img: &PdfImage, page_sizes: &HashMap<ObjectId, (f64, f64)>) -> f64 {
     let (dw, dh) = page_sizes
-        .iter()
-        .find(|(id, _)| *id == img.id)
-        .map(|(_, s)| *s)
+        .get(&img.id)
+        .copied()
         .unwrap_or((612.0, 792.0));
     let dpi_x = img.width as f64 / (dw / 72.0);
     let dpi_y = img.height as f64 / (dh / 72.0);
@@ -44,7 +44,7 @@ fn effective_dpi_for(img: &PdfImage, page_sizes: &[(ObjectId, (f64, f64))]) -> f
 
 /// Detect the maximum effective DPI across all images in the document.
 /// Returns `None` if no images are found.
-pub fn detect_max_dpi(images: &[PdfImage], page_sizes: &[(ObjectId, (f64, f64))]) -> Option<f64> {
+pub fn detect_max_dpi(images: &[PdfImage], page_sizes: &HashMap<ObjectId, (f64, f64)>) -> Option<f64> {
     let mut max_dpi: Option<f64> = None;
 
     for img_info in images {
@@ -130,7 +130,7 @@ const STD_CHROMINANCE_QT: [u16; 64] = [
 /// by ImageMagick's `identify -verbose` and similar tools.
 ///
 /// Returns None if no DQT markers are found or the data is not valid JPEG.
-fn estimate_quality_from_dqt(jpeg_data: &[u8]) -> Option<u8> {
+pub fn estimate_quality_from_dqt(jpeg_data: &[u8]) -> Option<u8> {
     let tables = extract_quantization_tables(jpeg_data)?;
     if tables.is_empty() {
         return None;
@@ -285,14 +285,10 @@ pub fn downsample_images(doc: &mut Document, target_dpi: f64) -> usize {
     let mut count = 0;
 
     for img_info in &images {
-        // Find the display size for this image by checking which pages reference it
-        let display_size = page_sizes
-            .iter()
-            .find(|(id, _)| *id == img_info.id)
-            .map(|(_, size)| *size);
-
-        // If we can't determine display size, assume image fills a Letter page
-        let (display_w_pts, display_h_pts) = display_size.unwrap_or((612.0, 792.0));
+        let (display_w_pts, display_h_pts) = page_sizes
+            .get(&img_info.id)
+            .copied()
+            .unwrap_or((612.0, 792.0));
 
         // Calculate effective DPI
         let display_w_inches = display_w_pts / 72.0;
@@ -586,15 +582,21 @@ pub fn collect_images_summary(images: &[PdfImage]) -> ImageSummary {
 pub fn process_images_single_pass(
     doc: &mut Document,
     images: &[PdfImage],
-    page_sizes: &[(ObjectId, (f64, f64))],
+    page_sizes: &HashMap<ObjectId, (f64, f64)>,
     target_dpi: Option<f64>,
     jpeg_quality: Option<u8>,
     jp2: bool,
     grayscale: bool,
+    allowed_ids: Option<&HashSet<ObjectId>>,
 ) -> ImageProcessStats {
     let mut stats = ImageProcessStats::default();
 
     for img_info in images {
+        if let Some(ids) = allowed_ids {
+            if !ids.contains(&img_info.id) {
+                continue;
+            }
+        }
         let is_tiny = img_info.width < 64 || img_info.height < 64;
         let will_grayscale = grayscale && img_info.components > 1;
 
@@ -748,20 +750,114 @@ pub struct ImageTaskResult {
     pub predictor_colors: Option<u32>,
 }
 
+/// Collect the set of image XObject ObjectIds referenced by the given pages.
+/// `page_indices` are 0-based. This traverses only the page tree and resource
+/// dictionaries — no image data is read.
+pub fn collect_image_ids_for_pages(doc: &Document, page_indices: &[u32]) -> HashSet<ObjectId> {
+    let map = build_page_image_map(doc);
+    let mut ids = HashSet::new();
+    for &i in page_indices {
+        if let Some(page_ids) = map.get(i as usize) {
+            ids.extend(page_ids);
+        }
+    }
+    ids
+}
+
+/// Build a 0-indexed map of page → XObject reference IDs.
+/// Also returns per-page MediaBox dimensions in PDF points.
+/// This traverses the page tree exactly once.
+pub fn build_page_image_map(doc: &Document) -> Vec<Vec<ObjectId>> {
+    let pages = doc.get_pages(); // BTreeMap<u32, ObjectId>, 1-indexed
+    let page_count = pages.len();
+    let mut map = vec![Vec::new(); page_count];
+
+    for (&page_num, &page_id) in &pages {
+        let idx = (page_num as usize).saturating_sub(1);
+        if idx >= page_count { continue; }
+
+        let page = match doc.get_object(page_id) {
+            Ok(Object::Dictionary(d)) => d,
+            _ => continue,
+        };
+        let resources = match page.get(b"Resources") {
+            Ok(Object::Dictionary(d)) => Some(d),
+            Ok(Object::Reference(id)) => doc.get_object(*id).ok().and_then(|o| o.as_dict().ok()),
+            _ => None,
+        };
+        if let Some(res) = resources {
+            collect_xobject_refs(doc, res, &mut map[idx]);
+        }
+    }
+
+    map
+}
+
+/// Per-page MediaBox dimensions (0-indexed). Returns (width_pts, height_pts) per page.
+pub fn collect_page_dims(doc: &Document) -> Vec<(f64, f64)> {
+    let pages = doc.get_pages();
+    let page_count = pages.len();
+    let mut dims = vec![(612.0, 792.0); page_count]; // default US Letter
+
+    for (&page_num, &page_id) in &pages {
+        let idx = (page_num as usize).saturating_sub(1);
+        if idx >= page_count { continue; }
+
+        let page = match doc.get_object(page_id) {
+            Ok(Object::Dictionary(d)) => d,
+            _ => continue,
+        };
+        if let Ok(Object::Array(arr)) = page.get(b"MediaBox") {
+            if arr.len() == 4 {
+                let w = obj_to_f64(&arr[2]).unwrap_or(612.0);
+                let h = obj_to_f64(&arr[3]).unwrap_or(792.0);
+                dims[idx] = (w, h);
+            }
+        }
+    }
+
+    dims
+}
+
+fn collect_xobject_refs(doc: &Document, res: &lopdf::Dictionary, out: &mut Vec<ObjectId>) {
+    if let Ok(Object::Dictionary(xobjects)) = res.get(b"XObject") {
+        for (_name, value) in xobjects.iter() {
+            if let Object::Reference(img_id) = value {
+                out.push(*img_id);
+            }
+        }
+    } else if let Ok(Object::Reference(xobj_ref)) = res.get(b"XObject") {
+        if let Ok(Object::Dictionary(xobjects)) = doc.get_object(*xobj_ref) {
+            for (_name, value) in xobjects.iter() {
+                if let Object::Reference(img_id) = value {
+                    out.push(*img_id);
+                }
+            }
+        }
+    }
+}
+
 /// Extract image tasks from a document for parallel processing.
 /// Each task is self-contained: includes image bytes and processing params.
+/// If `allowed_ids` is Some, only images whose ObjectId is in the set are included.
 pub fn extract_image_tasks(
     doc: &Document,
     images: &[PdfImage],
-    page_sizes: &[(ObjectId, (f64, f64))],
+    page_sizes: &HashMap<ObjectId, (f64, f64)>,
     target_dpi: Option<f64>,
     jpeg_quality: Option<u8>,
     jp2: bool,
     grayscale: bool,
+    allowed_ids: Option<&HashSet<ObjectId>>,
 ) -> Vec<ImageTask> {
     let mut tasks = Vec::new();
 
     for (idx, img_info) in images.iter().enumerate() {
+        if let Some(ids) = allowed_ids {
+            if !ids.contains(&img_info.id) {
+                continue;
+            }
+        }
         let is_tiny = img_info.width < 64 || img_info.height < 64;
         let will_grayscale = grayscale && img_info.components > 1;
         let eff_dpi = effective_dpi_for(img_info, page_sizes);
@@ -825,13 +921,20 @@ pub fn extract_image_tasks(
 
 /// Extract lossless image tasks from a document for parallel oxipng processing.
 /// Only extracts non-DCT, non-JPX images that can benefit from oxipng.
+/// If `allowed_ids` is Some, only images whose ObjectId is in the set are included.
 pub fn extract_lossless_image_tasks(
     doc: &Document,
     images: &[PdfImage],
+    allowed_ids: Option<&HashSet<ObjectId>>,
 ) -> Vec<ImageTask> {
     let mut tasks = Vec::new();
 
     for (idx, img_info) in images.iter().enumerate() {
+        if let Some(ids) = allowed_ids {
+            if !ids.contains(&img_info.id) {
+                continue;
+            }
+        }
         // Only process non-DCT images
         if img_info.is_dct {
             continue;
@@ -1544,8 +1647,8 @@ fn extract_png_idat(png_data: &[u8]) -> Option<Vec<u8>> {
 /// Try to find display sizes of images by scanning page MediaBox values.
 /// Returns (ObjectId, (width_pts, height_pts)) pairs.
 /// This is a simplified heuristic — assumes images fill their page.
-pub fn collect_page_image_sizes(doc: &Document) -> Vec<(ObjectId, (f64, f64))> {
-    let mut results = Vec::new();
+pub fn collect_page_image_sizes(doc: &Document) -> HashMap<ObjectId, (f64, f64)> {
+    let mut results = HashMap::new();
     let pages = doc.get_pages();
 
     for &page_id in pages.values() {
@@ -1554,7 +1657,6 @@ pub fn collect_page_image_sizes(doc: &Document) -> Vec<(ObjectId, (f64, f64))> {
             _ => continue,
         };
 
-        // Get page dimensions from MediaBox
         let (page_w, page_h) = match page.get(b"MediaBox") {
             Ok(Object::Array(arr)) if arr.len() == 4 => {
                 let w = obj_to_f64(&arr[2]).unwrap_or(612.0);
@@ -1564,7 +1666,6 @@ pub fn collect_page_image_sizes(doc: &Document) -> Vec<(ObjectId, (f64, f64))> {
             _ => (612.0, 792.0),
         };
 
-        // Find image XObject references in this page's resources
         let resources = match page.get(b"Resources") {
             Ok(Object::Dictionary(d)) => Some(d),
             Ok(Object::Reference(id)) => doc
@@ -1575,25 +1676,35 @@ pub fn collect_page_image_sizes(doc: &Document) -> Vec<(ObjectId, (f64, f64))> {
         };
 
         if let Some(res) = resources {
-            if let Ok(Object::Dictionary(xobjects)) = res.get(b"XObject") {
-                for (_name, value) in xobjects.iter() {
-                    if let Object::Reference(img_id) = value {
-                        results.push((*img_id, (page_w, page_h)));
-                    }
-                }
-            } else if let Ok(Object::Reference(xobj_ref)) = res.get(b"XObject") {
-                if let Ok(Object::Dictionary(xobjects)) = doc.get_object(*xobj_ref) {
-                    for (_name, value) in xobjects.iter() {
-                        if let Object::Reference(img_id) = value {
-                            results.push((*img_id, (page_w, page_h)));
-                        }
-                    }
-                }
-            }
+            collect_xobject_sizes(doc, res, page_w, page_h, &mut results);
         }
     }
 
     results
+}
+
+fn collect_xobject_sizes(
+    doc: &Document,
+    res: &lopdf::Dictionary,
+    page_w: f64,
+    page_h: f64,
+    out: &mut HashMap<ObjectId, (f64, f64)>,
+) {
+    if let Ok(Object::Dictionary(xobjects)) = res.get(b"XObject") {
+        for (_name, value) in xobjects.iter() {
+            if let Object::Reference(img_id) = value {
+                out.entry(*img_id).or_insert((page_w, page_h));
+            }
+        }
+    } else if let Ok(Object::Reference(xobj_ref)) = res.get(b"XObject") {
+        if let Ok(Object::Dictionary(xobjects)) = doc.get_object(*xobj_ref) {
+            for (_name, value) in xobjects.iter() {
+                if let Object::Reference(img_id) = value {
+                    out.entry(*img_id).or_insert((page_w, page_h));
+                }
+            }
+        }
+    }
 }
 
 fn obj_to_f64(obj: &Object) -> Option<f64> {

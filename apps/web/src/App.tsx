@@ -1,7 +1,7 @@
-import { createSignal, Show } from "solid-js";
+import { createSignal, createEffect, on, Show } from "solid-js";
 import Sidebar, { type Route } from "./components/ui/Sidebar";
 import PdfBottomBar from "./components/ui/PdfBottomBar";
-import PdfStatusInfo from "./components/ui/PdfStatusInfo";
+import PdfStatusInfo, { type PageImageStats } from "./components/ui/PdfStatusInfo";
 import PdfViewer from "./components/PdfViewer";
 import PdfMerge from "./components/PdfMerge";
 import PdfSplit from "./components/PdfSplit";
@@ -9,6 +9,7 @@ import PdfReorder from "./components/PdfReorder";
 import PdfCompress from "./components/PdfCompress";
 import PdfMetadata from "./components/PdfMetadata";
 import { PdfProvider, useSharedPdf } from "./PdfContext";
+import * as pdfWorker from "./pdf-worker-client";
 
 export default function App() {
   return (
@@ -22,65 +23,74 @@ function AppInner() {
   const [route, setRoute] = createSignal<Route>("view");
   const [activePage, setActivePage] = createSignal(0);
   const [pageDims, setPageDims] = createSignal<[number, number] | null>(null);
+  const [pageStats, setPageStats] = createSignal<PageImageStats | null>(null);
   const { sharedPdf, clear, download } = useSharedPdf();
 
-  return (
-    <div class="flex h-screen bg-gray-100">
-      <Sidebar active={route()} onNavigate={setRoute} />
+  // Fetch per-page stats when active page changes (View tab only)
+  createEffect(on([() => sharedPdf()?.handle, activePage, route] as const, ([h, page, r]) => {
+    if (!h || r !== "view") { setPageStats(null); return; }
+    pdfWorker.getPageAnalysis(h, page).then((stats) => {
+      if (sharedPdf()?.handle === h && activePage() === page && route() === "view") {
+        setPageStats(stats ? {
+          image_count: stats.image_count,
+          max_dpi: stats.max_dpi,
+          estimated_jpeg_quality: stats.estimated_jpeg_quality,
+          estimated_image_bytes: stats.estimated_image_bytes,
+        } : null);
+      }
+    });
+  }));
 
-      <main class="flex-1 flex flex-col overflow-hidden">
-        <div
-          class="flex-1 overflow-auto p-6"
-          classList={{ "!overflow-hidden !p-0": route() === "view" }}
-        >
-          <div class="max-w-5xl mx-auto" classList={{ "!max-w-none h-full": route() === "view" }}>
+  return (
+    <div class="flex flex-col h-screen bg-gray-100">
+      <div class="flex-1 flex min-h-0">
+        <Sidebar active={route()} onNavigate={setRoute} />
+
+        <main class="flex-1 overflow-hidden">
+          <div class="h-full">
             <Show when={route() === "view"}>
               <PdfViewer onActivePageChange={setActivePage} onActivePageDimsChange={setPageDims} />
             </Show>
 
             <Show when={route() === "merge"}>
-              <h2 class="text-xl font-semibold mb-4">Merge PDFs</h2>
               <PdfMerge />
             </Show>
 
             <Show when={route() === "split"}>
-              <h2 class="text-xl font-semibold mb-4">Split PDF</h2>
               <PdfSplit />
             </Show>
 
             <Show when={route() === "reorder"}>
-              <h2 class="text-xl font-semibold mb-4">Reorder Pages</h2>
               <PdfReorder />
             </Show>
 
             <Show when={route() === "compress"}>
-              <h2 class="text-xl font-semibold mb-4">Compress PDF</h2>
               <PdfCompress />
             </Show>
 
             <Show when={route() === "metadata"}>
-              <h2 class="text-xl font-semibold mb-4">Edit Metadata</h2>
               <PdfMetadata />
             </Show>
           </div>
-        </div>
+        </main>
+      </div>
 
-        <Show when={sharedPdf()}>
-          <PdfBottomBar
-            info={
-              <PdfStatusInfo
-                fileName={sharedPdf()!.fileName}
-                pageCount={sharedPdf()!.pageCount}
-                activePage={route() === "view" ? activePage() : undefined}
-                pageDims={route() === "view" ? pageDims() : null}
-                fileSize={sharedPdf()!.fileSize}
-              />
-            }
-            onDownload={download}
-            onClose={clear}
-          />
-        </Show>
-      </main>
+      <Show when={sharedPdf()}>
+        <PdfBottomBar
+          info={
+            <PdfStatusInfo
+              fileName={sharedPdf()!.fileName}
+              pageCount={sharedPdf()!.pageCount}
+              activePage={route() === "view" ? activePage() : undefined}
+              pageDims={route() === "view" ? pageDims() : null}
+              pageStats={route() === "view" ? pageStats() : null}
+              fileSize={sharedPdf()!.fileSize}
+            />
+          }
+          onDownload={download}
+          onRestart={clear}
+        />
+      </Show>
     </div>
   );
 }

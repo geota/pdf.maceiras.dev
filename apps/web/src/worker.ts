@@ -52,6 +52,47 @@ function getDoc(handle: string): Uint8Array {
   return doc;
 }
 
+// --- Per-page analysis cache ---
+export interface PageAnalysis {
+  image_count: number;
+  max_dpi: number | null;
+  estimated_jpeg_quality: number | null;
+  estimated_image_bytes: number;
+  image_ids: [number, number][];
+}
+
+export interface DetailedAnalysis {
+  summary: {
+    max_dpi: number | null;
+    estimated_jpeg_quality: number | null;
+    jpeg_image_count: number;
+    non_jpeg_image_count: number;
+    total_image_count: number;
+  };
+  pages: PageAnalysis[];
+}
+
+const analysisCache = new Map<string, DetailedAnalysis>();
+
+function getCachedAnalysis(handle: string): DetailedAnalysis | undefined {
+  return analysisCache.get(handle);
+}
+
+/** Remap cached analysis for a reorder operation (no re-analysis needed). */
+function remapAnalysisForReorder(oldHandle: string, newHandle: string, pageOrder: number[]) {
+  const cached = analysisCache.get(oldHandle);
+  if (!cached) return;
+  const newPages = pageOrder.map((i) => cached.pages[i]).filter(Boolean);
+  if (newPages.length === pageOrder.length) {
+    analysisCache.set(newHandle, { summary: cached.summary, pages: newPages });
+  }
+}
+
+/** Clear analysis cache for a handle. */
+function invalidateAnalysis(handle: string) {
+  analysisCache.delete(handle);
+}
+
 const workerApi = {
   async ping(): Promise<string> {
     await initialize();
@@ -71,6 +112,7 @@ const workerApi = {
   /** Free a loaded document from worker memory. */
   async unloadDocument(handle: string): Promise<void> {
     documents.delete(handle);
+    invalidateAnalysis(handle);
   },
 
   /** Return raw document bytes for a handle (used to distribute to render pool). */
@@ -177,6 +219,23 @@ const workerApi = {
     return Comlink.transfer(buf, [buf]);
   },
 
+  /** Reorder pages and store result in worker memory. Remaps analysis cache. */
+  async reorderAndLoad(
+    handle: string,
+    pageOrder: number[]
+  ): Promise<{ handle: string; pageCount: number; fileSize: number }> {
+    await initialize();
+    const result: Uint8Array = api!.reorderPages(
+      getDoc(handle),
+      new Uint32Array(pageOrder)
+    );
+    const newHandle = `doc_${nextHandle++}`;
+    documents.set(newHandle, result);
+    remapAnalysisForReorder(handle, newHandle, pageOrder);
+    const pageCount = api!.getPageCount(result);
+    return { handle: newHandle, pageCount, fileSize: result.byteLength };
+  },
+
   /** Get metadata from a loaded document. */
   async getMetadata(
     handle: string
@@ -191,7 +250,7 @@ const workerApi = {
     return api!.getMetadata(getDoc(handle));
   },
 
-  /** Analyze a loaded document's images. Returns stats for UI. */
+  /** Analyze a loaded document's images. Returns global stats (caches detailed analysis). */
   async analyzePdf(
     handle: string
   ): Promise<{
@@ -202,8 +261,35 @@ const workerApi = {
     total_image_count: number;
   }> {
     await initialize();
-    return api!.analyzePdf(getDoc(handle));
+    const cached = getCachedAnalysis(handle);
+    if (cached) return cached.summary;
+    const detailed: DetailedAnalysis = api!.analyzePdfDetailed(getDoc(handle));
+    analysisCache.set(handle, detailed);
+    return detailed.summary;
   },
+
+  /** Detailed analysis: global + per-page breakdown. Cached per handle. */
+  async analyzePdfDetailed(handle: string): Promise<DetailedAnalysis> {
+    await initialize();
+    const cached = getCachedAnalysis(handle);
+    if (cached) return cached;
+    const detailed: DetailedAnalysis = api!.analyzePdfDetailed(getDoc(handle));
+    analysisCache.set(handle, detailed);
+    return detailed;
+  },
+
+  /** Get per-page analysis for a single page (from cache or compute). */
+  async getPageAnalysis(handle: string, pageIndex: number): Promise<PageAnalysis | null> {
+    await initialize();
+    let cached = getCachedAnalysis(handle);
+    if (!cached) {
+      const detailed: DetailedAnalysis = api!.analyzePdfDetailed(getDoc(handle));
+      analysisCache.set(handle, detailed);
+      cached = detailed;
+    }
+    return cached.pages[pageIndex] ?? null;
+  },
+
 
   /** Compress a loaded document. Returns compressed PDF + compression report. */
   async compressPdf(

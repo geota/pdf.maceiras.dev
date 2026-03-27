@@ -7,6 +7,7 @@ import { useThumbnails } from "../hooks/useThumbnails";
 import { groupToText, parseFullExpression, removePageFromSegmentText, compactSegment } from "../lib/page-ranges";
 import { useSharedPdf } from "../PdfContext";
 import { usePageActions } from "./ui/PageActions";
+import { ExpressionInput, PanelLabel, PanelFooter } from "./ui/PanelControls";
 
 // Colors for groups — border + ring classes
 const GROUP_COLORS = [
@@ -372,137 +373,99 @@ export default function PdfSplit() {
       onMerged={handleMerged}
       onResetFiles={resetState}
       onClosePreview={() => setPreviewPage(null)}
-    >
-      <div class="mt-4">
-        <div class="flex items-center justify-between mb-3">
-          <p class="text-sm text-gray-600">
-            {fileName()} — {pageCount()} pages
-            {thumbsLoading() ? " (loading thumbnails...)" : ""}
-          </p>
-        </div>
-
-        {/* Group controls */}
-        <div class="mb-4 space-y-2">
-          <div class="flex items-center gap-2 flex-wrap">
-            <span class="text-xs font-medium text-gray-500 uppercase tracking-wide">
-              Groups:
-            </span>
-            <For each={groups()}>
-              {(group, gIdx) => {
-                const color = () => GROUP_COLORS[gIdx() % GROUP_COLORS.length];
-                const isActive = () => activeGroupId() === group.id;
-                const isVisible = () => visibleGroupIds().has(group.id);
-                return (
-                  <button
-                    onClick={(e) => {
-                      if (e.metaKey || e.ctrlKey) {
-                        // Toggle visibility, set active if making visible
-                        setVisibleGroupIds((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(group.id)) next.delete(group.id);
-                          else next.add(group.id);
-                          return next;
-                        });
-                        if (!visibleGroupIds().has(group.id)) {
-                          // Was just toggled on
-                          setActiveGroupId(group.id);
-                        }
-                      } else {
-                        // Exclusive select
-                        setActiveGroupId(group.id);
-                        setVisibleGroupIds(new Set([group.id]));
-                      }
-                    }}
-                    class={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
-                      isActive()
-                        ? `${color().bg} ${color().text} ring-2 ring-offset-1 ring-current`
-                        : isVisible()
-                          ? `${color().bg} ${color().text}`
-                          : `${color().bg} ${color().text} opacity-40 hover:opacity-70`
-                    }`}
-                  >
-                    <span class={`w-2 h-2 rounded-full ${color().dot}`} />
-                    Group {gIdx() + 1}
-                    <span class="text-[10px] opacity-70">
-                      ({group.pages.length})
-                    </span>
-                    <Show when={groups().length > 1}>
-                      <span
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          removeGroup(group.id);
-                        }}
-                        class="ml-0.5 hover:opacity-100 opacity-50 cursor-pointer"
-                      >
-                        x
-                      </span>
-                    </Show>
-                  </button>
-                );
-              }}
-            </For>
-            <button
-              onClick={addGroup}
-              disabled={groups().length >= GROUP_COLORS.length}
-              class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-gray-200 text-gray-600 hover:bg-gray-300 disabled:opacity-30"
-            >
-              + Add group
-            </button>
-          </div>
-
-          {/* Combined range input */}
-          <div class="flex items-center gap-2">
-            <input
-              type="text"
+      panelTitle="Split"
+      panel={
+        <div class="flex flex-col flex-1 min-h-0">
+          <div class="flex-1 overflow-y-auto p-4 space-y-5">
+            <ExpressionInput
               value={rangeText()}
-              onInput={(e) => setRangeText(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") applyRangeText();
-              }}
-              placeholder="e.g. 1-3+5, 7-10, 1:20:2  (, = group  + = join  : = slice)"
-              class="border border-gray-300 rounded px-2 py-1 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              onInput={setRangeText}
+              onApply={() => applyRangeText()}
+              placeholder="1-3+5, 7-10"
+              hint=", = group, + = join, : = slice"
             />
-            <button
-              onClick={() => applyRangeText()}
-              class="text-xs text-blue-600 hover:underline shrink-0"
-            >
-              Apply
-            </button>
+
+            {/* Groups */}
+            <div class="space-y-1.5">
+              <PanelLabel>Groups</PanelLabel>
+              <div class="space-y-1.5">
+                <For each={groups()}>
+                  {(group, gIdx) => {
+                    const color = () => GROUP_COLORS[gIdx() % GROUP_COLORS.length];
+                    const isActive = () => activeGroupId() === group.id;
+                    const isVisible = () => visibleGroupIds().has(group.id);
+                    return (
+                      <button
+                        onClick={(e) => {
+                          if (e.metaKey || e.ctrlKey) {
+                            setVisibleGroupIds((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(group.id)) next.delete(group.id);
+                              else next.add(group.id);
+                              return next;
+                            });
+                            if (!visibleGroupIds().has(group.id)) {
+                              setActiveGroupId(group.id);
+                            }
+                          } else {
+                            setActiveGroupId(group.id);
+                            setVisibleGroupIds(new Set([group.id]));
+                          }
+                        }}
+                        class={`w-full flex items-center gap-2 px-3 py-2 rounded border text-xs font-medium transition-colors ${
+                          isActive()
+                            ? `${color().bg} ${color().text} border-current ring-2 ring-offset-1 ring-current`
+                            : isVisible()
+                              ? `${color().bg} ${color().text} border-transparent`
+                              : `${color().bg} ${color().text} border-transparent opacity-40 hover:opacity-70`
+                        }`}
+                      >
+                        <span class={`w-2 h-2 rounded-full shrink-0 ${color().dot}`} />
+                        <span class="flex-1 text-left">Group {gIdx() + 1}</span>
+                        <span class="text-[10px] opacity-70">{group.pages.length} pages</span>
+                        <Show when={groups().length > 1}>
+                          <span
+                            onClick={(e) => { e.stopPropagation(); removeGroup(group.id); }}
+                            class="ml-1 hover:opacity-100 opacity-50 cursor-pointer"
+                          >
+                            x
+                          </span>
+                        </Show>
+                      </button>
+                    );
+                  }}
+                </For>
+                <button
+                  onClick={addGroup}
+                  disabled={groups().length >= GROUP_COLORS.length}
+                  class="w-full flex items-center justify-center py-1.5 rounded border border-dashed border-gray-300 text-xs font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-30"
+                >
+                  + Add group
+                </button>
+              </div>
+            </div>
           </div>
+
+          <PanelFooter
+            statusText={`${totalSelected()}/${pageCount()} pages`}
+            saving={splitting()}
+            disabled={totalSelected() === 0}
+            onSave={split}
+          />
         </div>
-
-        <p class="text-xs text-gray-400 mb-2">
-          Click thumbnails to add to active group. {"\u2318"}+click groups to view multiple.
-        </p>
-
-        <ThumbnailGrid
-          pageCount={pageCount()}
-          thumbnails={thumbnails()}
-          pageColorClass={pageColorClass}
-          pageBadges={pageBadges}
-          pageActions={pageActions}
-          pendingOps={pendingOps()}
-          onPageClick={handlePageClick}
-          onPageDblClick={(pageIndex) => setPreviewPage(pageIndex)}
-          onVisiblePagesChange={updateVisiblePages}
-        />
-
-        <Show when={totalSelected() > 0}>
-          <div class="mt-4">
-            <button
-              onClick={split}
-              disabled={splitting()}
-              class="px-4 py-2 bg-green-600 text-white rounded disabled:opacity-50 text-sm font-medium"
-            >
-              {splitting()
-                ? "Splitting..."
-                : `Split into ${groups().filter((g) => g.pages.length > 0).length} PDF${
-                    groups().filter((g) => g.pages.length > 0).length !== 1 ? "s" : ""
-                  }`}
-            </button>
-          </div>
-        </Show>
-      </div>
+      }
+    >
+      <ThumbnailGrid
+        pageCount={pageCount()}
+        thumbnails={thumbnails()}
+        pageColorClass={pageColorClass}
+        pageBadges={pageBadges}
+        pageActions={pageActions}
+        pendingOps={pendingOps()}
+        onPageClick={handlePageClick}
+        onPageDblClick={(pageIndex) => setPreviewPage(pageIndex)}
+        onVisiblePagesChange={updateVisiblePages}
+      />
     </PdfToolLayout>
   );
 }

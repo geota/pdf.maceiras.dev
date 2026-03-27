@@ -14,6 +14,7 @@ import { useThumbnails } from "../hooks/useThumbnails";
 import { parseGroupSegment, groupToText } from "../lib/page-ranges";
 import { useSharedPdf, type PageOp } from "../PdfContext";
 import { usePageActions, type PageAction } from "./ui/PageActions";
+import { ExpressionInput, PanelLabel, PanelFooter } from "./ui/PanelControls";
 
 interface PageItem {
   uid: string;
@@ -40,7 +41,7 @@ export default function PdfReorder() {
   let lastClickedUid: string | null = null;
 
   const pageActions = usePageActions();
-  const { thumbnails, loading: thumbsLoading, loadAll, updateVisiblePages } = useThumbnails(handle, pageCount);
+  const { thumbnails, loadAll, updateVisiblePages } = useThumbnails(handle, pageCount);
 
   // IntersectionObserver for viewport-aware thumbnail priority
   const elementToPage = new Map<Element, number>();
@@ -82,7 +83,6 @@ export default function PdfReorder() {
     observer?.disconnect();
   });
 
-  // Sync from shared PDF
   createEffect(on(sharedPdf, (pdf) => {
     if (pdf) {
       initFromDocument(pdf.handle, pdf.pageCount, pdf.fileName);
@@ -119,12 +119,10 @@ export default function PdfReorder() {
   async function handleFiles(files: File[]) {
     if (!files.length) return;
     resetState();
-
     if (files.length > 1) {
       setPendingFiles(files);
       return;
     }
-
     const file = files[0];
     setError("");
     try {
@@ -179,21 +177,18 @@ export default function PdfReorder() {
     if (fromIdx === -1 || toIdx === -1) return;
 
     if (sel.size > 1 && sel.has(fromUid)) {
-      // Multi-drag
       const moved: PageItem[] = [];
       const remaining: PageItem[] = [];
       for (const item of list) {
         if (sel.has(item.uid)) moved.push(item);
         else remaining.push(item);
       }
-      // Insert at drop target's position in remaining
       let insertIdx = remaining.findIndex((it) => it.uid === toUid);
       if (insertIdx === -1) insertIdx = remaining.length;
       else if (toIdx > fromIdx) insertIdx++;
       remaining.splice(insertIdx, 0, ...moved);
       setItems(remaining);
     } else {
-      // Single drag
       const newList = [...list];
       const [moved] = newList.splice(fromIdx, 1);
       newList.splice(toIdx, 0, moved);
@@ -228,7 +223,7 @@ export default function PdfReorder() {
     }
     const pages = parseGroupSegment(text, pageCount());
     if (!pages || pages.length === 0) {
-      setError("Invalid expression. Use e.g. ::-1, 1-5+10, ::2+2::2");
+      setError("Invalid expression");
       return;
     }
     setError("");
@@ -251,7 +246,6 @@ export default function PdfReorder() {
     await flushOps();
     const h = handle();
     if (!h) return;
-
     setSaving(true);
     setError("");
     try {
@@ -283,98 +277,76 @@ export default function PdfReorder() {
       onMerged={handleMerged}
       onResetFiles={resetState}
       onClosePreview={() => setPreviewPage(null)}
-    >
-      <div class="mt-4">
-        <div class="flex items-center justify-between mb-3">
-          <p class="text-sm text-gray-600">
-            {fileName()} — {items().length}/{pageCount()} pages
-            {thumbsLoading() ? " (loading thumbnails...)" : ""}
-          </p>
-          <div class="flex gap-2">
+      panelTitle="Reorder"
+      panel={
+        <div class="flex flex-col flex-1 min-h-0">
+          <div class="flex-1 overflow-y-auto p-4 space-y-5">
+            <ExpressionInput
+              value={orderText()}
+              onInput={setOrderText}
+              onApply={applyOrderText}
+              placeholder="::-1, ::2+2::2"
+              hint="::-1 reverse, ::2+2::2 odd+even"
+            />
+
+            {/* Selection actions */}
             <Show when={selectedUids().size > 0}>
-              <button
-                onClick={deleteSelected}
-                class="text-xs text-red-500 hover:underline"
-              >
-                Delete selected ({selectedUids().size})
-              </button>
-              <button
-                onClick={clearSelection}
-                class="text-xs text-gray-500 hover:underline"
-              >
-                Clear selection
-              </button>
+              <div class="space-y-1.5">
+                <PanelLabel>{selectedUids().size} selected</PanelLabel>
+                <div class="flex gap-2">
+                  <button onClick={deleteSelected} class="px-3 py-1.5 text-xs text-red-600 border border-red-200 rounded hover:bg-red-50">
+                    Delete
+                  </button>
+                  <button onClick={clearSelection} class="px-3 py-1.5 text-xs text-gray-600 border border-gray-300 rounded hover:bg-gray-50">
+                    Clear
+                  </button>
+                </div>
+              </div>
             </Show>
+
+            {/* Reset */}
             <Show when={isModified()}>
-              <button
-                onClick={resetOrder}
-                class="text-xs text-gray-500 hover:underline"
-              >
-                Reset
+              <button onClick={resetOrder} class="text-xs text-gray-500 hover:text-gray-700 hover:underline">
+                Reset to original order
               </button>
             </Show>
           </div>
-        </div>
 
-        <p class="text-xs text-gray-400 mb-2">
-          Drag pages to reorder, or type an expression below. Shift/Cmd+click to multi-select.
-        </p>
-
-        <div class="flex items-center gap-2 mb-3">
-          <input
-            type="text"
-            value={orderText()}
-            onInput={(e) => setOrderText(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") applyOrderText();
-            }}
-            placeholder="e.g. ::-1 (reverse), ::2+2::2 (odd then even), 5:1:-1+6-10"
-            class="border border-gray-300 rounded px-2 py-1 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          <PanelFooter
+            statusText={`${selectedUids().size}/${items().length} pages`}
+            saving={saving()}
+            disabled={!isModified()}
+            onSave={save}
+            onSelectAll={() => setSelectedUids(new Set(items().map((it) => it.uid)))}
+            onClearSelection={clearSelection}
+            allSelected={selectedUids().size > 0 && selectedUids().size === items().length}
           />
-          <button
-            onClick={applyOrderText}
-            class="text-xs text-blue-600 hover:underline shrink-0"
-          >
-            Apply
-          </button>
         </div>
-
-        <DragDropProvider onDragEnd={onDragEnd} collisionDetector={closestCenter}>
-          <DragDropSensors />
-          <SortableProvider ids={items().map((it) => it.uid)}>
-            <div class="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 gap-3">
-              <For each={items()}>
-                {(item) => (
-                  <SortableThumbnail
-                    uid={item.uid}
-                    pageIndex={item.pageIdx}
-                    thumbnails={thumbnails()}
-                    isSelected={selectedUids().has(item.uid)}
-                    actions={pageActions}
-                    pendingOps={pendingOps().get(item.pageIdx)}
-                    onClick={(e) => handleItemClick(item.uid, e)}
-                    onDblClick={() => setPreviewPage(item.pageIdx)}
-                    onObserve={observeElement}
-                    onUnobserve={unobserveElement}
-                  />
-                )}
-              </For>
-            </div>
-          </SortableProvider>
-        </DragDropProvider>
-
-        <Show when={isModified()}>
-          <div class="mt-4">
-            <button
-              onClick={save}
-              disabled={saving()}
-              class="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-50 text-sm font-medium"
-            >
-              {saving() ? "Saving..." : "Apply reorder"}
-            </button>
+      }
+    >
+      <DragDropProvider onDragEnd={onDragEnd} collisionDetector={closestCenter}>
+        <DragDropSensors />
+        <SortableProvider ids={items().map((it) => it.uid)}>
+          <div class="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 gap-3">
+            <For each={items()}>
+              {(item) => (
+                <SortableThumbnail
+                  uid={item.uid}
+                  pageIndex={item.pageIdx}
+                  thumbnails={thumbnails()}
+                  isSelected={selectedUids().has(item.uid)}
+                  actions={pageActions}
+                  pendingOps={pendingOps().get(item.pageIdx)}
+                  onClick={(e) => handleItemClick(item.uid, e)}
+                  onDblClick={() => setPreviewPage(item.pageIdx)}
+                  onObserve={observeElement}
+                  onUnobserve={unobserveElement}
+                />
+              )}
+            </For>
           </div>
-        </Show>
-      </div>
+        </SortableProvider>
+      </DragDropProvider>
     </PdfToolLayout>
   );
 }
