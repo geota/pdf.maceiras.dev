@@ -41,6 +41,28 @@ pub fn reorder_pages(data: &[u8], page_order: Vec<u32>) -> Result<Vec<u8>, JsErr
         .map_err(|e| JsError::new(&e.to_string()))
 }
 
+#[wasm_bindgen(js_name = "rotatePage")]
+pub fn rotate_page(data: &[u8], page_index: u32, angle: i32) -> Result<Vec<u8>, JsError> {
+    pdf_core::page_ops::rotate_page(data, page_index, angle)
+        .map_err(|e| JsError::new(&e.to_string()))
+}
+
+#[wasm_bindgen(js_name = "cropPage")]
+pub fn crop_page(data: &[u8], page_index: u32, crop_box: Vec<f32>) -> Result<Vec<u8>, JsError> {
+    if crop_box.len() != 4 {
+        return Err(JsError::new("crop_box must have exactly 4 elements [llx, lly, urx, ury]"));
+    }
+    let cb: [f32; 4] = [crop_box[0], crop_box[1], crop_box[2], crop_box[3]];
+    pdf_core::page_ops::crop_page(data, page_index, cb)
+        .map_err(|e| JsError::new(&e.to_string()))
+}
+
+#[wasm_bindgen(js_name = "scalePage")]
+pub fn scale_page(data: &[u8], page_index: u32, new_width: f32, new_height: f32) -> Result<Vec<u8>, JsError> {
+    pdf_core::page_ops::scale_page(data, page_index, new_width, new_height)
+        .map_err(|e| JsError::new(&e.to_string()))
+}
+
 #[wasm_bindgen(js_name = "getMetadata")]
 pub fn get_metadata(data: &[u8]) -> Result<JsValue, JsError> {
     let doc =

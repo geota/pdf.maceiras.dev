@@ -1,13 +1,32 @@
 import { createSignal, createEffect, Show, on } from "solid-js";
 import DropZone from "./ui/DropZone";
 import DocumentViewer from "./ui/DocumentViewer";
+import PdfBottomBar from "./ui/PdfBottomBar";
+import PdfStatusInfo from "./ui/PdfStatusInfo";
 import { useSharedPdf } from "../PdfContext";
 
-export default function PdfViewer(props: { onActivePageChange?: (page: number) => void }) {
-  const { sharedPdf, loadFile } = useSharedPdf();
+interface Props {
+  /** Called when active page changes (for external status bars). */
+  onActivePageChange?: (page: number) => void;
+  /** Called when active page dimensions change (for external status bars). */
+  onActivePageDimsChange?: (dims: [number, number]) => void;
+  /** Dark theme — used for overlay/preview contexts. */
+  dark?: boolean;
+  /** Render an integrated bottom bar with page info, download, and close. */
+  bottomBar?: boolean;
+  /** Initial page to scroll to (default 0). */
+  initialPage?: number;
+  /** Close handler — required when bottomBar is true. */
+  onClose?: () => void;
+}
+
+export default function PdfViewer(props: Props) {
+  const { sharedPdf, loadFile, download } = useSharedPdf();
   const [handle, setHandle] = createSignal<string | null>(null);
   const [pageCount, setPageCount] = createSignal(0);
   const [error, setError] = createSignal("");
+  const [activePage, setActivePage] = createSignal(props.initialPage ?? 0);
+  const [pageDims, setPageDims] = createSignal<[number, number] | null>(null);
 
   // Sync from shared PDF when it changes
   createEffect(on(sharedPdf, (pdf) => {
@@ -20,6 +39,16 @@ export default function PdfViewer(props: { onActivePageChange?: (page: number) =
       setPageCount(0);
     }
   }));
+
+  function handleActivePage(page: number) {
+    setActivePage(page);
+    props.onActivePageChange?.(page);
+  }
+
+  function handleDims(dims: [number, number]) {
+    setPageDims(dims);
+    props.onActivePageDimsChange?.(dims);
+  }
 
   async function handleFiles(files: File[]) {
     if (!files.length) return;
@@ -52,7 +81,27 @@ export default function PdfViewer(props: { onActivePageChange?: (page: number) =
         <DocumentViewer
           handle={handle()!}
           pageCount={pageCount()}
-          onActivePageChange={props.onActivePageChange}
+          initialPage={props.initialPage}
+          onActivePageChange={handleActivePage}
+          onActivePageDimsChange={handleDims}
+          theme={props.dark ? "dark" : "light"}
+        />
+      </Show>
+
+      <Show when={props.bottomBar && handle()}>
+        <PdfBottomBar
+          dark={props.dark}
+          info={
+            <PdfStatusInfo
+              fileName={sharedPdf()?.fileName ?? ""}
+              pageCount={pageCount()}
+              activePage={activePage()}
+              pageDims={pageDims()}
+              fileSize={sharedPdf()?.fileSize}
+            />
+          }
+          onDownload={download}
+          onClose={props.onClose!}
         />
       </Show>
     </div>

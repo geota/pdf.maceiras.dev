@@ -19,6 +19,21 @@ export function getThumbnailFromCache(handle: string, page: number): ImageData |
   return globalCache.get(handle)?.get(page);
 }
 
+/** Move all cached thumbnails from one handle to another, skipping specific pages. */
+export function migrateThumbnailCache(from: string, to: string, skipPages?: Set<number>) {
+  const old = globalCache.get(from);
+  if (!old) return;
+  let target = globalCache.get(to);
+  if (!target) {
+    target = new Map();
+    globalCache.set(to, target);
+  }
+  for (const [page, img] of old) {
+    if (!skipPages?.has(page)) target.set(page, img);
+  }
+  globalCache.delete(from);
+}
+
 export function useThumbnails(handle: () => string | null, pageCount: () => number) {
   const thumbMap = new Map<number, ImageData>();
   const [version, setVersion] = createSignal(0);

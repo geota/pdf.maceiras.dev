@@ -1,6 +1,7 @@
 import { createSignal, Show } from "solid-js";
 import Sidebar, { type Route } from "./components/ui/Sidebar";
 import PdfBottomBar from "./components/ui/PdfBottomBar";
+import PdfStatusInfo from "./components/ui/PdfStatusInfo";
 import PdfViewer from "./components/PdfViewer";
 import PdfMerge from "./components/PdfMerge";
 import PdfSplit from "./components/PdfSplit";
@@ -8,7 +9,6 @@ import PdfReorder from "./components/PdfReorder";
 import PdfCompress from "./components/PdfCompress";
 import PdfMetadata from "./components/PdfMetadata";
 import { PdfProvider, useSharedPdf } from "./PdfContext";
-import { formatSize } from "./lib/format";
 
 export default function App() {
   return (
@@ -21,6 +21,7 @@ export default function App() {
 function AppInner() {
   const [route, setRoute] = createSignal<Route>("view");
   const [activePage, setActivePage] = createSignal(0);
+  const [pageDims, setPageDims] = createSignal<[number, number] | null>(null);
   const { sharedPdf, clear, download } = useSharedPdf();
 
   return (
@@ -34,7 +35,7 @@ function AppInner() {
         >
           <div class="max-w-5xl mx-auto" classList={{ "!max-w-none h-full": route() === "view" }}>
             <Show when={route() === "view"}>
-              <PdfViewer onActivePageChange={setActivePage} />
+              <PdfViewer onActivePageChange={setActivePage} onActivePageDimsChange={setPageDims} />
             </Show>
 
             <Show when={route() === "merge"}>
@@ -66,16 +67,15 @@ function AppInner() {
 
         <Show when={sharedPdf()}>
           <PdfBottomBar
-            info={<>
-              {sharedPdf()!.fileName}
-              {" — "}
-              {route() === "view"
-                ? <>Page {activePage() + 1} of {sharedPdf()!.pageCount}</>
-                : <>{sharedPdf()!.pageCount} page{sharedPdf()!.pageCount !== 1 ? "s" : ""}</>
-              }
-              {" \u00b7 "}
-              {formatSize(sharedPdf()!.fileSize)}
-            </>}
+            info={
+              <PdfStatusInfo
+                fileName={sharedPdf()!.fileName}
+                pageCount={sharedPdf()!.pageCount}
+                activePage={route() === "view" ? activePage() : undefined}
+                pageDims={route() === "view" ? pageDims() : null}
+                fileSize={sharedPdf()!.fileSize}
+              />
+            }
             onDownload={download}
             onClose={clear}
           />

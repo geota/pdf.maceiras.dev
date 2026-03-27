@@ -1,5 +1,7 @@
 import { For, onCleanup, onMount } from "solid-js";
 import Thumbnail from "./Thumbnail";
+import type { PageAction } from "./PageActions";
+import type { PageOp } from "../../PdfContext";
 
 interface Props {
   pageCount: number;
@@ -9,6 +11,10 @@ interface Props {
   pageColorClass?: (pageIndex: number) => string | undefined;
   /** Small colored dots for group membership indicators */
   pageBadges?: (pageIndex: number) => string[];
+  /** Per-page action buttons shown on hover */
+  pageActions?: PageAction[];
+  /** Pending per-page operations (ordered list per page). */
+  pendingOps?: Map<number, PageOp[]>;
   onPageClick?: (pageIndex: number, e: MouseEvent) => void;
   onPageDblClick?: (pageIndex: number, e: MouseEvent) => void;
   /** Called when the set of visible page indices changes (for render prioritization). */
@@ -70,6 +76,8 @@ export default function ThumbnailGrid(props: Props) {
                 selected={isSelected()}
                 selectedClass={colorClass()}
                 badges={badges()}
+                actions={props.pageActions}
+                pendingOps={props.pendingOps?.get(pageIndex)}
                 onClick={(e) => props.onPageClick?.(pageIndex, e)}
                 onDblClick={(e) => props.onPageDblClick?.(pageIndex, e)}
               />

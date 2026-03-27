@@ -3,6 +3,7 @@ pub mod document;
 pub mod error;
 pub mod image_opt;
 pub mod merge;
+pub mod page_ops;
 pub mod page_utils;
 pub mod reorder;
 pub mod split;

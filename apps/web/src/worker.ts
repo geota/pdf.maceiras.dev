@@ -202,7 +202,7 @@ const workerApi = {
     total_image_count: number;
   }> {
     await initialize();
-    return (api as any).analyzePdf(getDoc(handle));
+    return api!.analyzePdf(getDoc(handle));
   },
 
   /** Compress a loaded document. Returns compressed PDF + compression report. */
@@ -256,13 +256,13 @@ const workerApi = {
     imageTasks?: unknown[];
   }> {
     await initialize();
-    return (api as any).compressBegin(getDoc(handle), options ?? null);
+    return api!.compressBegin(getDoc(handle), options ?? null);
   },
 
   /** Process a single image task (called by pool workers). */
   async processImageTask(task: unknown): Promise<unknown | null> {
     await initialize();
-    return (api as any).processImageTask(task);
+    return api!.processImageTask(task);
   },
 
   /** Process an image task with transferred bytes (zero-copy).
@@ -274,7 +274,7 @@ const workerApi = {
     await initialize();
     // Reconstruct the full task object with the transferred bytes
     const task = { ...(meta as any), image_bytes: new Uint8Array(bytes) };
-    return (api as any).processImageTask(task);
+    return api!.processImageTask(task);
   },
 
   /** Target-size step: apply results, return next tasks or signal completion. */
@@ -285,7 +285,7 @@ const workerApi = {
     imageTasks?: unknown[];
   }> {
     await initialize();
-    return (api as any).compressTargetStep(results);
+    return api!.compressTargetStep(results);
   },
 
   /** Phase 3: apply image results and finalize. */
@@ -301,13 +301,86 @@ const workerApi = {
     };
   }> {
     await initialize();
-    const res = (api as any).compressFinish(results);
+    const res = api!.compressFinish(results);
     const data = (res as any).data as Uint8Array;
     const buf = data.buffer as ArrayBuffer;
     return {
       data: Comlink.transfer(buf, [buf]) as unknown as ArrayBuffer,
       result: (res as any).result,
     };
+  },
+
+  /** Rotate a single page. Stores result in worker memory, returns new handle + pageCount + fileSize. */
+  async rotatePage(
+    handle: string,
+    pageIndex: number,
+    angle: number
+  ): Promise<{ handle: string; pageCount: number; fileSize: number }> {
+    await initialize();
+    const result: Uint8Array = api!.rotatePage(
+      getDoc(handle),
+      pageIndex,
+      angle
+    );
+    const newHandle = `doc_${nextHandle++}`;
+    documents.set(newHandle, result);
+    const pageCount = api!.getPageCount(result);
+    return { handle: newHandle, pageCount, fileSize: result.byteLength };
+  },
+
+  /** Apply multiple page rotations in one pass. Each entry is [pageIndex, angle].
+   *  Stores result in worker memory, returns new handle. */
+  async rotatePages(
+    handle: string,
+    rotations: [number, number][]
+  ): Promise<{ handle: string; pageCount: number; fileSize: number }> {
+    await initialize();
+    let bytes = getDoc(handle);
+    for (const [pageIndex, angle] of rotations) {
+      bytes = api!.rotatePage(bytes, pageIndex, angle);
+    }
+    const newHandle = `doc_${nextHandle++}`;
+    documents.set(newHandle, bytes);
+    const pageCount = api!.getPageCount(bytes);
+    return { handle: newHandle, pageCount, fileSize: bytes.byteLength };
+  },
+
+  /** Crop a single page. Stores result in worker memory, returns new handle + pageCount + fileSize. */
+  async cropPage(
+    handle: string,
+    pageIndex: number,
+    cropBox: [number, number, number, number]
+  ): Promise<{ handle: string; pageCount: number; fileSize: number }> {
+    await initialize();
+    const result: Uint8Array = api!.cropPage(
+      getDoc(handle),
+      pageIndex,
+      new Float32Array(cropBox)
+    );
+    const newHandle = `doc_${nextHandle++}`;
+    documents.set(newHandle, result);
+    const pageCount = api!.getPageCount(result);
+    return { handle: newHandle, pageCount, fileSize: result.byteLength };
+  },
+
+  /** Scale a single page to new dimensions (PDF points). Stores result, returns new handle. */
+  async scalePage(
+    handle: string,
+    pageIndex: number,
+    newWidthPts: number,
+    newHeightPts: number
+  ): Promise<{ handle: string; pageCount: number; fileSize: number }> {
+    await initialize();
+    const result: Uint8Array = api!.scalePage(
+      getDoc(handle),
+      pageIndex,
+      newWidthPts,
+      newHeightPts
+    );
+    const newHandle = `doc_${nextHandle++}`;
+    documents.set(newHandle, result);
+    const pageCount = api!.getPageCount(result);
+    return { handle: newHandle, pageCount, fileSize: result.byteLength };
   },
 
   /** Set metadata on a loaded document. Returns new PDF as ArrayBuffer. */
