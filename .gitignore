@@ -5,6 +5,7 @@ packages/pdf-wasm-pkg/
 .vite/
 *.local
 .DS_Store
+.claude/
 
 # Keep PDFium binary tracked
 !crates/pdf-wasm/pdfium/*.js

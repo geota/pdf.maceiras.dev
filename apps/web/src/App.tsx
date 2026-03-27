@@ -8,6 +8,7 @@ import PdfSplit from "./components/PdfSplit";
 import PdfReorder from "./components/PdfReorder";
 import PdfCompress from "./components/PdfCompress";
 import PdfMetadata from "./components/PdfMetadata";
+import AboutPage from "./components/AboutPage";
 import { PdfProvider, useSharedPdf } from "./PdfContext";
 import * as pdfWorker from "./pdf-worker-client";
 
@@ -70,6 +71,10 @@ function AppInner() {
 
             <Show when={route() === "metadata"}>
               <PdfMetadata />
+            </Show>
+
+            <Show when={route() === "about"}>
+              <AboutPage />
             </Show>
           </div>
         </main>

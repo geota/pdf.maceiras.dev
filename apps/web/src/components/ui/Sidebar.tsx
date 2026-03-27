@@ -1,6 +1,6 @@
 import { For } from "solid-js";
 
-export type Route = "view" | "merge" | "split" | "reorder" | "compress" | "metadata";
+export type Route = "view" | "merge" | "split" | "reorder" | "compress" | "metadata" | "about";
 
 interface NavItem {
   route: Route;
@@ -43,6 +43,18 @@ export default function Sidebar(props: Props) {
           )}
         </For>
       </nav>
+      <div class="px-4 py-3 border-t border-gray-800">
+        <button
+          onClick={() => props.onNavigate("about")}
+          class={`text-[11px] transition-colors ${
+            props.active === "about"
+              ? "text-gray-300"
+              : "text-gray-500 hover:text-gray-400"
+          }`}
+        >
+          About & Terms
+        </button>
+      </div>
     </aside>
   );
 }

@@ -1,0 +1,6 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pdf-maceiras-dev",
+  "pages_build_output_dir": "apps/web/dist",
+  "compatibility_date": "2025-04-01"
+}
