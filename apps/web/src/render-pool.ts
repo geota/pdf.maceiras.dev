@@ -187,6 +187,7 @@ class RenderPool {
       this.workers.map((w) => w.unloadDocument(poolHandle))
     );
   }
+
 }
 
 let pool: RenderPool | null = null;

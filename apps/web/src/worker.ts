@@ -488,4 +488,8 @@ const workerApi = {
 
 export type WorkerApi = typeof workerApi;
 
+// allowedOrigins is left as default ["*"] — safe because dedicated Workers
+// communicate over an implicit MessagePort that is inaccessible to other
+// origins. MessageEvent.origin is always "" for dedicated workers, so origin
+// filtering only applies to SharedWorker/iframe scenarios (not used here).
 Comlink.expose(workerApi);
