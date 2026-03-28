@@ -177,6 +177,39 @@ class RenderPool {
     return results;
   }
 
+  /** Rasterize selected pages as grayscale JPEGs in parallel across pool workers.
+   *  Returns rendered pages with their page_index, ready for replacePagesWithImages. */
+  async rasterizeGrayscalePages(
+    primaryHandle: string,
+    pageIndices: number[],
+    dpi: number,
+    onProgress?: (completed: number, total: number) => void
+  ): Promise<{ page_index: number; jpeg_bytes: Uint8Array; img_w: number; img_h: number; width_pts: number; height_pts: number }[]> {
+    await this.initPromise;
+    const poolHandle = this.handleMap.get(primaryHandle);
+    if (!poolHandle) throw new Error("Document not loaded in render pool");
+
+    const total = pageIndices.length;
+    const results = new Array<{ page_index: number; jpeg_bytes: Uint8Array; img_w: number; img_h: number; width_pts: number; height_pts: number }>(total);
+    let nextTask = 0;
+    let completed = 0;
+
+    const workerLoop = async (worker: Comlink.Remote<WorkerApi>) => {
+      while (true) {
+        const taskIdx = nextTask++;
+        if (taskIdx >= total) break;
+        const pageIndex = pageIndices[taskIdx];
+        const page = await worker.rasterizeGrayscalePage(poolHandle, pageIndex, dpi);
+        results[taskIdx] = { ...page, page_index: pageIndex };
+        completed++;
+        onProgress?.(completed, total);
+      }
+    };
+
+    await Promise.all(this.workers.map((w) => workerLoop(w)));
+    return results;
+  }
+
   /** Unload a document from all pool workers. */
   async unload(primaryHandle: string): Promise<void> {
     const poolHandle = this.handleMap.get(primaryHandle);

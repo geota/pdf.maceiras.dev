@@ -27,7 +27,7 @@ function makeUid() {
 }
 
 export default function PdfReorder() {
-  const { sharedPdf, loadFile, loadFromBytes, flushOps, pendingOps } = useSharedPdf();
+  const { sharedPdf, loadFile, loadFromBytes, adoptHandle, flushOps, pendingOps } = useSharedPdf();
   const [handle, setHandle] = createSignal<string | null>(null);
   const [fileName, setFileName] = createSignal("");
   const [pageCount, setPageCount] = createSignal(0);
@@ -134,7 +134,7 @@ export default function PdfReorder() {
 
   function handleMerged(mergedHandle: string, mergedPageCount: number, mergedFileName: string) {
     setPendingFiles(null);
-    initFromDocument(mergedHandle, mergedPageCount, mergedFileName);
+    adoptHandle(mergedHandle, mergedPageCount, mergedFileName);
   }
 
   function handleItemClick(uid: string, e: MouseEvent) {

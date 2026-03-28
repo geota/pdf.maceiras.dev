@@ -298,6 +298,7 @@ const workerApi = {
       preset?: "lossless" | "low" | "medium" | "high" | "advanced";
       strip_metadata?: boolean;
       grayscale?: boolean;
+      grayscale_mode?: "off" | "vector" | "rasterize";
       advanced?: {
         mode: "direct" | "target_size";
         dpi?: number;
@@ -467,6 +468,38 @@ const workerApi = {
     documents.set(newHandle, result);
     const pageCount = api!.getPageCount(result);
     return { handle: newHandle, pageCount, fileSize: result.byteLength };
+  },
+
+  /** Rasterize a single page as a grayscale JPEG.
+   *  Returns { jpeg_bytes, img_w, img_h, width_pts, height_pts }. */
+  async rasterizeGrayscalePage(
+    handle: string,
+    pageIndex: number,
+    dpi: number
+  ): Promise<{ jpeg_bytes: Uint8Array; img_w: number; img_h: number; width_pts: number; height_pts: number }> {
+    await initialize();
+    return api!.rasterizeGrayscalePage(getDoc(handle), pageIndex, dpi);
+  },
+
+  /** Assemble rendered grayscale pages into a single PDF. */
+  async assembleImagePdf(
+    pages: { jpeg_bytes: Uint8Array; img_w: number; img_h: number; width_pts: number; height_pts: number }[]
+  ): Promise<ArrayBuffer> {
+    await initialize();
+    const result: Uint8Array = api!.assembleImagePdf(pages);
+    const buf = result.buffer as ArrayBuffer;
+    return Comlink.transfer(buf, [buf]);
+  },
+
+  /** Replace specific pages in a PDF with rasterized grayscale images. */
+  async replacePagesWithImages(
+    handle: string,
+    renderedPages: { page_index: number; jpeg_bytes: Uint8Array; img_w: number; img_h: number; width_pts: number; height_pts: number }[]
+  ): Promise<ArrayBuffer> {
+    await initialize();
+    const result: Uint8Array = api!.replacePagesWithImages(getDoc(handle), renderedPages);
+    const buf = result.buffer as ArrayBuffer;
+    return Comlink.transfer(buf, [buf]);
   },
 
   /** Set metadata on a loaded document. Returns new PDF as ArrayBuffer. */

@@ -31,7 +31,7 @@ let nextGroupId = 0;
 
 
 export default function PdfSplit() {
-  const { sharedPdf, loadFile, flushOps, pendingOps } = useSharedPdf();
+  const { sharedPdf, loadFile, adoptHandle, flushOps, pendingOps } = useSharedPdf();
   const [handle, setHandle] = createSignal<string | null>(null);
   const [fileName, setFileName] = createSignal("");
   const [pageCount, setPageCount] = createSignal(0);
@@ -198,11 +198,7 @@ export default function PdfSplit() {
 
   function handleMerged(mergedHandle: string, mergedPageCount: number, mergedFileName: string) {
     setPendingFiles(null);
-    setFileName(mergedFileName);
-    setHandle(mergedHandle);
-    setPageCount(mergedPageCount);
-    addGroup();
-    loadAll();
+    adoptHandle(mergedHandle, mergedPageCount, mergedFileName);
   }
 
   function addGroup() {

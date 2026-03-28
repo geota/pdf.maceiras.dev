@@ -53,6 +53,19 @@ pub enum AdvancedMode {
     },
 }
 
+/// Grayscale conversion mode.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum GrayscaleMode {
+    /// No grayscale conversion.
+    #[default]
+    Off,
+    /// Rewrite content streams + convert images. Preserves text/vector structure.
+    Vector,
+    /// Rasterize each page via PDFium into a grayscale image. Destroys structure.
+    Rasterize,
+}
+
 /// User-configurable compression options.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompressOptions {
@@ -61,9 +74,12 @@ pub struct CompressOptions {
     /// Strip metadata, annotations, bookmarks. Top-level, applies to all presets.
     #[serde(default = "default_true")]
     pub strip_metadata: bool,
-    /// Convert images to grayscale. Top-level, applies to all presets.
+    /// Legacy boolean grayscale flag — maps to GrayscaleMode::Vector if true.
     #[serde(default)]
     pub grayscale: bool,
+    /// Grayscale conversion mode. Takes precedence over `grayscale` bool if set.
+    #[serde(default)]
+    pub grayscale_mode: GrayscaleMode,
     /// Advanced sub-mode. Only used when `preset == Advanced`.
     #[serde(default)]
     pub advanced: Option<AdvancedMode>,
@@ -91,6 +107,7 @@ impl Default for CompressOptions {
             preset: CompressionPreset::Lossless,
             strip_metadata: true,
             grayscale: false,
+            grayscale_mode: GrayscaleMode::Off,
             advanced: None,
             selected_pages: None,
         }
@@ -105,6 +122,18 @@ struct ResolvedSettings {
 }
 
 impl CompressOptions {
+    /// Effective grayscale mode: grayscale_mode takes precedence, then legacy bool.
+    pub fn effective_grayscale(&self) -> GrayscaleMode {
+        if self.grayscale_mode != GrayscaleMode::Off {
+            return self.grayscale_mode.clone();
+        }
+        if self.grayscale {
+            GrayscaleMode::Vector
+        } else {
+            GrayscaleMode::Off
+        }
+    }
+
     /// Resolve preset + top-level options into flat settings for non-target-size modes.
     fn resolve(&self) -> ResolvedSettings {
         let (dpi, jpeg_quality, jp2) = match &self.preset {
@@ -285,23 +314,23 @@ pub fn compress_bytes(data: &[u8], opts: &CompressOptions) -> Result<(Vec<u8>, C
     apply_lossless_structural(&mut doc, opts.strip_metadata, &mut techniques);
 
     // =======================================================================
+    // Phase 1.5: Full-page grayscale (vector mode — content stream rewriting)
+    // =======================================================================
+    if opts.effective_grayscale() == GrayscaleMode::Vector {
+        log::info!("[compress] converting to grayscale (content streams + images)...");
+        let ops_rewritten = crate::grayscale::convert_document_to_grayscale(
+            &mut doc,
+            opts.selected_pages.as_deref(),
+        );
+        if ops_rewritten > 0 {
+            techniques.push(format!("Converted to grayscale ({ops_rewritten} color operations)"));
+        }
+    }
+
+    // =======================================================================
     // Phase 2: Image processing
     // =======================================================================
     if is_target_size {
-        // Target-size path: apply grayscale first (filtered by selected pages), then iterative loop
-        if opts.grayscale {
-            log::info!("[compress] converting to grayscale...");
-            let images = crate::image_opt::collect_images(&doc);
-            let allowed = opts.page_image_filter(&doc);
-            let stats = crate::image_opt::process_images_single_pass(
-                &mut doc, &images, &HashMap::new(), None, None, false, true, allowed.as_ref(),
-            );
-            if stats.grayscaled > 0 {
-                let msg = format!("Converted {} images to grayscale", stats.grayscaled);
-                log::info!("[compress] {msg}");
-                techniques.push(msg);
-            }
-        }
         let (target_bytes, min_dpi, min_jpeg_quality, jp2) = match opts.advanced.as_ref().unwrap() {
             AdvancedMode::TargetSize { target_bytes, min_dpi, min_jpeg_quality, jp2 } => {
                 (*target_bytes, *min_dpi, *min_jpeg_quality, *jp2)
@@ -313,8 +342,8 @@ pub fn compress_bytes(data: &[u8], opts: &CompressOptions) -> Result<(Vec<u8>, C
         );
     }
 
-    if is_lossy || opts.grayscale {
-        // Single-pass: grayscale + downsample + encode in one decode cycle
+    if is_lossy {
+        // Single-pass: downsample + encode in one decode cycle
         log::info!("[compress] single-pass image processing...");
         let images = crate::image_opt::collect_images(&doc);
         let allowed = opts.page_image_filter(&doc);
@@ -326,7 +355,7 @@ pub fn compress_bytes(data: &[u8], opts: &CompressOptions) -> Result<(Vec<u8>, C
             resolved.dpi,
             resolved.jpeg_quality,
             resolved.jp2,
-            opts.grayscale,
+            false,
             allowed.as_ref(),
         );
         if stats.grayscaled > 0 {
@@ -428,11 +457,23 @@ pub fn compress_begin(
     // Structural lossless
     apply_lossless_structural(&mut doc, opts.strip_metadata, &mut techniques);
 
+    // Full-page grayscale (vector mode — content streams + images)
+    if opts.effective_grayscale() == GrayscaleMode::Vector {
+        log::info!("[compress-parallel] converting to grayscale (content streams + images)...");
+        let ops_rewritten = crate::grayscale::convert_document_to_grayscale(
+            &mut doc,
+            opts.selected_pages.as_deref(),
+        );
+        if ops_rewritten > 0 {
+            techniques.push(format!("Converted to grayscale ({ops_rewritten} color operations)"));
+        }
+    }
+
     // Determine if we need parallel image processing
     let resolved = opts.resolve();
     let is_lossy = resolved.dpi.is_some() || resolved.jpeg_quality.is_some() || resolved.jp2;
 
-    if !is_lossy && !opts.grayscale {
+    if !is_lossy {
         // Lossless — run Flate recompress sequentially, extract oxipng tasks for parallel
         log::info!("[compress-parallel] lossless: running Flate recompress inline...");
         let recompressed = recompress_images_lossless(&mut doc);
@@ -470,7 +511,7 @@ pub fn compress_begin(
         resolved.dpi,
         resolved.jpeg_quality,
         resolved.jp2,
-        opts.grayscale,
+        false,
         allowed.as_ref(),
     );
 
@@ -624,15 +665,14 @@ fn compress_target_begin(
 
     apply_lossless_structural(&mut doc, opts.strip_metadata, &mut techniques);
 
-    // Apply grayscale upfront if requested (filtered by selected pages)
-    if opts.grayscale {
-        let images = crate::image_opt::collect_images(&doc);
-        let allowed = opts.page_image_filter(&doc);
-        let stats = crate::image_opt::process_images_single_pass(
-            &mut doc, &images, &HashMap::new(), None, None, false, true, allowed.as_ref(),
+    // Apply grayscale upfront if requested (content streams + images)
+    if opts.effective_grayscale() == GrayscaleMode::Vector {
+        let ops_rewritten = crate::grayscale::convert_document_to_grayscale(
+            &mut doc,
+            opts.selected_pages.as_deref(),
         );
-        if stats.grayscaled > 0 {
-            techniques.push(format!("Converted {} images to grayscale", stats.grayscaled));
+        if ops_rewritten > 0 {
+            techniques.push(format!("Converted to grayscale ({ops_rewritten} color operations)"));
         }
     }
 
@@ -679,7 +719,7 @@ fn compress_target_begin(
     let tasks = extract_target_step_tasks(
         &doc, &images, &page_sizes,
         current_dpi, next_dpi, min_dpi,
-        current_quality, next_quality, min_quality, jp2,
+        next_quality, min_quality, jp2,
         allowed.as_ref(),
     );
 
@@ -806,7 +846,7 @@ pub fn compress_target_step(
     let tasks = extract_target_step_tasks(
         &doc, &images, &page_sizes,
         current_dpi, next_dpi, min_dpi,
-        current_quality, next_quality, min_quality, jp2,
+        next_quality, min_quality, jp2,
         allowed.as_ref(),
     );
 
@@ -855,7 +895,6 @@ fn extract_target_step_tasks(
     current_dpi: f64,
     next_dpi: f64,
     min_dpi: f64,
-    _current_quality: f64,
     next_quality: f64,
     min_quality: f64,
     jp2: bool,

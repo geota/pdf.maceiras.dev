@@ -45,7 +45,7 @@ const PRESET_INFO: Record<Preset, { label: string; description: string }> = {
 };
 
 export default function PdfCompress() {
-  const { sharedPdf, loadFile, loadFromBytes, flushOps, pendingOps } = useSharedPdf();
+  const { sharedPdf, loadFile, loadFromBytes, adoptHandle, flushOps, pendingOps } = useSharedPdf();
   const [handle, setHandle] = createSignal<string | null>(null);
   const [fileName, setFileName] = createSignal("");
   const [pageCount, setPageCount] = createSignal(0);
@@ -68,7 +68,8 @@ export default function PdfCompress() {
   const [stripMetadata, setStripMetadata] = createSignal(false);
 
   // Per-page options
-  const [grayscale, setGrayscale] = createSignal(false);
+  type GrayscaleMode = "off" | "vector" | "rasterize";
+  const [grayscaleMode, setGrayscaleMode] = createSignal<GrayscaleMode>("off");
 
   // Advanced sub-mode
   const [advancedSubMode, setAdvancedSubMode] = createSignal<AdvancedSubMode>("direct");
@@ -150,11 +151,7 @@ export default function PdfCompress() {
 
   function handleMerged(mergedHandle: string, mergedPageCount: number, mergedFileName: string) {
     setPendingFiles(null);
-    setHandle(mergedHandle);
-    setFileName(mergedFileName);
-    setPageCount(mergedPageCount);
-    setSelectedPages(new Set<number>(Array.from({ length: mergedPageCount }, (_, i) => i)));
-    loadAll();
+    adoptHandle(mergedHandle, mergedPageCount, mergedFileName);
   }
 
   function handlePageClick(pageIndex: number, _e: MouseEvent) {
@@ -182,7 +179,7 @@ export default function PdfCompress() {
     const base: Record<string, unknown> = {
       preset: p,
       strip_metadata: stripMetadata(),
-      grayscale: grayscale(),
+      grayscale_mode: grayscaleMode(),
       // Pass selected pages so per-page ops only apply to these
       selected_pages: [...selectedPages()],
     };
@@ -225,9 +222,34 @@ export default function PdfCompress() {
     try {
       await flushOps();
       const options = buildOptions();
-      const res = await compressWithParallel(h, options);
-      setResult(res.result);
-      setCompressedData(res.data);
+
+      // Rasterize mode: render selected pages in parallel, replace in original, then compress
+      if (grayscaleMode() === "rasterize") {
+        const pool = getRenderPool();
+        const selected = [...selectedPages()].sort((a, b) => a - b);
+        await pool.ensureLoaded(h, () => pdfWorker.getDocumentBytes(h));
+
+        setProgressLabel(`Rasterizing ${selected.length} pages...`);
+        const rendered = await pool.rasterizeGrayscalePages(h, selected, 300, (done, total) => {
+          setProgressPct(Math.round((done / total) * 100));
+          setProgressLabel(`Rasterizing pages: ${done}/${total}`);
+        });
+
+        setProgressLabel("Replacing pages...");
+        const replaced = await pdfWorker.replacePagesWithImages(h, rendered);
+
+        // Load result and compress it
+        const { handle: rHandle } = await pdfWorker.loadDocument(replaced);
+        const rOptions = { ...options, grayscale_mode: "off" };
+        const res = await compressWithParallel(rHandle, rOptions);
+        await pdfWorker.unloadDocument(rHandle);
+        setResult(res.result);
+        setCompressedData(res.data);
+      } else {
+        const res = await compressWithParallel(h, options);
+        setResult(res.result);
+        setCompressedData(res.data);
+      }
     } catch (err: any) {
       setError(err.message || "Compression failed");
     } finally {
@@ -375,18 +397,12 @@ export default function PdfCompress() {
                   />
 
                   <PanelLabel>Encoding</PanelLabel>
-                  <PanelButton
-                    active={encodingChoice() === "none"}
-                    label="Keep original"
-                    description="Preserve existing image encoding"
-                    onClick={() => setEncodingChoice("none")}
-                  />
                   <PanelInputRow
                     label="JPEG Quality"
                     value={jpegQuality()}
                     onInput={setJpegQuality}
                     active={encodingChoice() === "jpeg"}
-                    onToggle={() => setEncodingChoice("jpeg")}
+                    onToggle={() => setEncodingChoice(encodingChoice() === "jpeg" ? "none" : "jpeg")}
                     min="10" max="95" step="5"
                     disabled={!hasJpegs()}
                   />
@@ -394,7 +410,7 @@ export default function PdfCompress() {
                     active={encodingChoice() === "jp2"}
                     label="JPEG 2000"
                     badge="limited support"
-                    onClick={() => { if (hasImages()) setEncodingChoice("jp2"); }}
+                    onClick={() => { if (hasImages()) setEncodingChoice(encodingChoice() === "jp2" ? "none" : "jp2"); }}
                     disabled={!hasImages()}
                   />
                 </div>
@@ -443,10 +459,10 @@ export default function PdfCompress() {
                   onClick={() => setStripMetadata(!stripMetadata())}
                 />
                 <PanelButton
-                  active={grayscale()}
-                  label="Grayscale"
-                  description="Convert images to grayscale"
-                  onClick={() => setGrayscale(!grayscale())}
+                  active={grayscaleMode() === "rasterize"}
+                  label="Grayscale (rasterize)"
+                  description="Render pages as grayscale images"
+                  onClick={() => setGrayscaleMode(grayscaleMode() === "rasterize" ? "off" : "rasterize")}
                 />
               </div>
             </div>

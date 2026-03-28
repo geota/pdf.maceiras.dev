@@ -345,3 +345,261 @@ pub fn get_page_dimensions(data: &[u8], page_index: u16) -> Result<JsValue, JsEr
         Ok(arr.into())
     })
 }
+
+/// Rasterize a single page as a grayscale JPEG. Returns a JS object:
+/// { jpeg_bytes: Uint8Array, width_pts: f32, height_pts: f32 }
+/// Designed to be called in parallel across pool workers.
+#[wasm_bindgen(js_name = "rasterizeGrayscalePage")]
+pub fn rasterize_grayscale_page(data: &[u8], page_index: u16, dpi: u16) -> Result<JsValue, JsError> {
+    use pdfium_render::prelude::*;
+    use image::codecs::jpeg::JpegEncoder;
+
+    let dpi = if dpi == 0 { 300 } else { dpi };
+
+    with_pdfium(|pdfium| {
+        let src = pdfium
+            .load_pdf_from_byte_slice(data, None)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+
+        let page = src.pages().get(page_index)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+
+        let pdf_w = page.width().value;
+        let pdf_h = page.height().value;
+
+        let render_w = ((pdf_w / 72.0) * dpi as f32).round() as i32;
+        let config = PdfRenderConfig::new()
+            .set_target_width(render_w)
+            .use_grayscale_rendering(true)
+            .render_form_data(true);
+
+        let bitmap = page
+            .render_with_config(&config)
+            .map_err(|e| JsError::new(&format!("Render page {page_index}: {e}")))?;
+
+        let image_data = bitmap
+            .as_image_data()
+            .map_err(|e| JsError::new(&format!("ImageData page {page_index}: {e:?}")))?;
+        let img_w = image_data.width();
+        let img_h = image_data.height();
+        let rgba_pixels = image_data.data().0;
+
+        let gray_pixels: Vec<u8> = rgba_pixels
+            .chunks_exact(4)
+            .map(|px| {
+                let r = px[0] as f32;
+                let g = px[1] as f32;
+                let b = px[2] as f32;
+                (0.299 * r + 0.587 * g + 0.114 * b).round() as u8
+            })
+            .collect();
+
+        let gray_img = image::GrayImage::from_raw(img_w, img_h, gray_pixels)
+            .ok_or_else(|| JsError::new("Failed to build GrayImage"))?;
+        let mut jpeg_bytes = Vec::new();
+        let encoder = JpegEncoder::new_with_quality(&mut jpeg_bytes, 85);
+        gray_img.write_with_encoder(encoder)
+            .map_err(|e| JsError::new(&format!("JPEG encode: {e}")))?;
+
+        let obj = js_sys::Object::new();
+        let typed = js_sys::Uint8Array::from(jpeg_bytes.as_slice());
+        js_sys::Reflect::set(&obj, &"jpeg_bytes".into(), &typed).unwrap();
+        js_sys::Reflect::set(&obj, &"img_w".into(), &JsValue::from_f64(img_w as f64)).unwrap();
+        js_sys::Reflect::set(&obj, &"img_h".into(), &JsValue::from_f64(img_h as f64)).unwrap();
+        js_sys::Reflect::set(&obj, &"width_pts".into(), &JsValue::from_f64(pdf_w as f64)).unwrap();
+        js_sys::Reflect::set(&obj, &"height_pts".into(), &JsValue::from_f64(pdf_h as f64)).unwrap();
+        Ok(obj.into())
+    })
+}
+
+/// Assemble rendered grayscale pages into a single PDF.
+/// `pages` is an Array of { jpeg_bytes: Uint8Array, img_w, img_h, width_pts, height_pts }.
+/// Pages must be in order.
+#[wasm_bindgen(js_name = "assembleImagePdf")]
+pub fn assemble_image_pdf(pages: JsValue) -> Result<Vec<u8>, JsError> {
+    use lopdf::{dictionary, Object, Stream};
+
+    let arr: js_sys::Array = pages.into();
+    let len = arr.length();
+
+    let mut out_doc = lopdf::Document::with_version("1.7");
+    let pages_id = out_doc.new_object_id();
+    let mut page_refs = Vec::new();
+
+    for i in 0..len {
+        let entry = arr.get(i);
+        let jpeg_val = js_sys::Reflect::get(&entry, &"jpeg_bytes".into())
+            .map_err(|_| JsError::new("missing jpeg_bytes"))?;
+        let jpeg_arr = js_sys::Uint8Array::new(&jpeg_val);
+        let jpeg_bytes = jpeg_arr.to_vec();
+
+        let img_w = js_sys::Reflect::get(&entry, &"img_w".into())
+            .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
+        let img_h = js_sys::Reflect::get(&entry, &"img_h".into())
+            .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
+        let pdf_w = js_sys::Reflect::get(&entry, &"width_pts".into())
+            .ok().and_then(|v| v.as_f64()).unwrap_or(612.0) as f32;
+        let pdf_h = js_sys::Reflect::get(&entry, &"height_pts".into())
+            .ok().and_then(|v| v.as_f64()).unwrap_or(792.0) as f32;
+
+        let img_dict = dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => Object::Integer(img_w),
+            "Height" => Object::Integer(img_h),
+            "ColorSpace" => "DeviceGray",
+            "BitsPerComponent" => Object::Integer(8),
+            "Filter" => "DCTDecode",
+            "Length" => Object::Integer(jpeg_bytes.len() as i64),
+        };
+        let img_id = out_doc.add_object(Stream::new(img_dict, jpeg_bytes));
+
+        let xobject_dict = dictionary! { "Im0" => Object::Reference(img_id) };
+        let resources = dictionary! { "XObject" => xobject_dict };
+        let resources_id = out_doc.add_object(resources);
+
+        let content_str = format!("q {} 0 0 {} 0 0 cm /Im0 Do Q", pdf_w, pdf_h);
+        let content_id = out_doc.add_object(Stream::new(dictionary! {}, content_str.into_bytes()));
+
+        let page_dict = dictionary! {
+            "Type" => "Page",
+            "Parent" => Object::Reference(pages_id),
+            "MediaBox" => vec![
+                Object::Real(0.0), Object::Real(0.0),
+                Object::Real(pdf_w), Object::Real(pdf_h),
+            ],
+            "Contents" => Object::Reference(content_id),
+            "Resources" => Object::Reference(resources_id),
+        };
+        let page_id = out_doc.add_object(page_dict);
+        page_refs.push(Object::Reference(page_id));
+    }
+
+    let pages_dict = dictionary! {
+        "Type" => "Pages",
+        "Count" => Object::Integer(page_refs.len() as i64),
+        "Kids" => Object::Array(page_refs),
+    };
+    out_doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+
+    let catalog = dictionary! {
+        "Type" => "Catalog",
+        "Pages" => Object::Reference(pages_id),
+    };
+    let catalog_id = out_doc.add_object(catalog);
+    out_doc.trailer.set("Root", Object::Reference(catalog_id));
+
+    let mut buf = Vec::new();
+    out_doc.save_to(&mut buf)
+        .map_err(|e| JsError::new(&format!("Save PDF: {e}")))?;
+    Ok(buf)
+}
+
+/// Replace specific pages in a PDF with rasterized grayscale images.
+/// Uses split → swap → merge to avoid in-place mutation issues.
+/// `data` is the original PDF. `rendered_pages` is an Array of
+/// { page_index: number, jpeg_bytes: Uint8Array, img_w, img_h, width_pts, height_pts }.
+/// Pages not in the array are kept as-is.
+#[wasm_bindgen(js_name = "replacePagesWithImages")]
+pub fn replace_pages_with_images(data: &[u8], rendered_pages: JsValue) -> Result<Vec<u8>, JsError> {
+    use lopdf::{dictionary, Object, Stream};
+    use std::collections::HashMap;
+
+    // Parse rendered pages into a map: page_index → image data
+    let arr: js_sys::Array = rendered_pages.into();
+    let mut replacements: HashMap<u32, (Vec<u8>, i64, i64, f32, f32)> = HashMap::new();
+
+    for i in 0..arr.length() {
+        let entry = arr.get(i);
+        let page_index = js_sys::Reflect::get(&entry, &"page_index".into())
+            .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u32;
+        let jpeg_val = js_sys::Reflect::get(&entry, &"jpeg_bytes".into())
+            .map_err(|_| JsError::new("missing jpeg_bytes"))?;
+        let jpeg_bytes = js_sys::Uint8Array::new(&jpeg_val).to_vec();
+        let img_w = js_sys::Reflect::get(&entry, &"img_w".into())
+            .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
+        let img_h = js_sys::Reflect::get(&entry, &"img_h".into())
+            .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
+        let pdf_w = js_sys::Reflect::get(&entry, &"width_pts".into())
+            .ok().and_then(|v| v.as_f64()).unwrap_or(612.0) as f32;
+        let pdf_h = js_sys::Reflect::get(&entry, &"height_pts".into())
+            .ok().and_then(|v| v.as_f64()).unwrap_or(792.0) as f32;
+        replacements.insert(page_index, (jpeg_bytes, img_w, img_h, pdf_w, pdf_h));
+    }
+
+    // Split original PDF into individual single-page PDFs
+    let page_count = pdf_core::PdfDocument::from_bytes(data)
+        .map_err(|e| JsError::new(&e.to_string()))?
+        .page_count();
+    let ranges: Vec<pdf_core::PageRange> = (0..page_count)
+        .map(|i| pdf_core::PageRange { start: i, end: i + 1 })
+        .collect();
+    let mut individual_pages = pdf_core::split::split_bytes(data, &ranges)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+
+    // Build single-page image PDFs for each replaced page
+    for (page_index, (jpeg_bytes, img_w, img_h, pdf_w, pdf_h)) in &replacements {
+        let idx = *page_index as usize;
+        if idx >= individual_pages.len() {
+            continue;
+        }
+
+        let mut out_doc = lopdf::Document::with_version("1.7");
+        let pages_id = out_doc.new_object_id();
+
+        let img_dict = dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => Object::Integer(*img_w),
+            "Height" => Object::Integer(*img_h),
+            "ColorSpace" => "DeviceGray",
+            "BitsPerComponent" => Object::Integer(8),
+            "Filter" => "DCTDecode",
+            "Length" => Object::Integer(jpeg_bytes.len() as i64),
+        };
+        let img_id = out_doc.add_object(Stream::new(img_dict, jpeg_bytes.clone()));
+
+        let xobject_dict = dictionary! { "Im0" => Object::Reference(img_id) };
+        let resources = dictionary! { "XObject" => xobject_dict };
+        let resources_id = out_doc.add_object(resources);
+
+        let content_str = format!("q {} 0 0 {} 0 0 cm /Im0 Do Q", pdf_w, pdf_h);
+        let content_id = out_doc.add_object(Stream::new(dictionary! {}, content_str.into_bytes()));
+
+        let page_dict = dictionary! {
+            "Type" => "Page",
+            "Parent" => Object::Reference(pages_id),
+            "MediaBox" => vec![
+                Object::Real(0.0), Object::Real(0.0),
+                Object::Real(*pdf_w), Object::Real(*pdf_h),
+            ],
+            "Contents" => Object::Reference(content_id),
+            "Resources" => Object::Reference(resources_id),
+        };
+        let page_id = out_doc.add_object(page_dict);
+
+        let pages_dict = dictionary! {
+            "Type" => "Pages",
+            "Count" => Object::Integer(1),
+            "Kids" => vec![Object::Reference(page_id)],
+        };
+        out_doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+
+        let catalog = dictionary! {
+            "Type" => "Catalog",
+            "Pages" => Object::Reference(pages_id),
+        };
+        let catalog_id = out_doc.add_object(catalog);
+        out_doc.trailer.set("Root", Object::Reference(catalog_id));
+
+        let mut buf = Vec::new();
+        out_doc.save_to(&mut buf)
+            .map_err(|e| JsError::new(&format!("Save image page: {e}")))?;
+
+        individual_pages[idx] = buf;
+    }
+
+    // Merge all pages back together
+    let slices: Vec<&[u8]> = individual_pages.iter().map(|v| v.as_slice()).collect();
+    pdf_core::merge::merge_bytes(&slices).map_err(|e| JsError::new(&e.to_string()))
+}

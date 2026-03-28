@@ -11,6 +11,8 @@ wasm-opt = false
 
 [dependencies]
 pdf-core = { path = "../pdf-core" }
+lopdf = { workspace = true }
+image = { workspace = true }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 pdfium-render = { version = "0.8", default-features = false, features = ["pdfium_latest"] }
 wasm-bindgen = "0.2"

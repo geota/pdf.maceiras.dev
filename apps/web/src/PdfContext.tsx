@@ -64,6 +64,8 @@ interface PdfContextValue {
   loadFile: (file: File) => Promise<void>;
   /** Load a PDF from raw bytes (e.g. compression result) into shared state. */
   loadFromBytes: (bytes: ArrayBuffer, name: string) => Promise<void>;
+  /** Adopt a document handle already loaded in worker memory into shared state. */
+  adoptHandle: (handle: string, pageCount: number, fileName: string) => void;
   /** Clear shared PDF and unload from worker. */
   clear: () => void;
   /** Download the current working PDF (flushes pending ops first). */
@@ -122,6 +124,11 @@ export const PdfProvider: ParentComponent = (props) => {
       pageCount: result.pageCount,
       fileSize: bytes.byteLength,
     });
+  }
+
+  function adoptHandle(handle: string, pageCount: number, fileName: string) {
+    unloadCurrent();
+    setSharedPdf({ handle, fileName, pageCount, fileSize: 0 });
   }
 
   function clear() {
@@ -314,6 +321,7 @@ export const PdfProvider: ParentComponent = (props) => {
     setPreviewOpen,
     loadFile,
     loadFromBytes,
+    adoptHandle,
     clear,
     download,
     setPageOp,

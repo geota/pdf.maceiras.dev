@@ -19,6 +19,7 @@ pub struct PdfImage {
     pub bpc: u32,
     pub components: u32,
     pub is_dct: bool,
+    pub is_jpx: bool,
     pub color_space_name: Vec<u8>,
 }
 
@@ -385,14 +386,25 @@ pub fn recompress_images_lossy(doc: &mut Document, jpeg_quality: u8) -> usize {
 }
 
 /// Convert color images to grayscale. Returns the number of images converted.
-pub fn convert_images_to_grayscale(doc: &mut Document) -> usize {
+/// If `selected_pages` is Some, only images on those pages (0-indexed) are converted.
+pub fn convert_images_to_grayscale(
+    doc: &mut Document,
+    selected_pages: Option<&[u32]>,
+) -> usize {
     let images = collect_images(doc);
+    let allowed = selected_pages.map(|sp| collect_image_ids_for_pages(doc, sp));
     let mut count = 0;
 
     for img_info in &images {
         // Only convert RGB/CMYK, skip already-gray images
         if img_info.components <= 1 {
             continue;
+        }
+        // Skip images not on selected pages
+        if let Some(ref allowed_ids) = allowed {
+            if !allowed_ids.contains(&img_info.id) {
+                continue;
+            }
         }
 
         if let Ok(dynamic) = decode_pdf_image(doc, img_info) {
@@ -463,6 +475,63 @@ pub fn recompress_images_jpeg2000(doc: &mut Document) -> usize {
     }
 
     count
+}
+
+/// Decode JPEG 2000 (JPXDecode) image data into a DynamicImage.
+fn decode_jpeg2000(data: &[u8]) -> std::result::Result<DynamicImage, String> {
+    let jp2_image = justjp2::decode(data).map_err(|e| format!("JP2 decode: {e}"))?;
+
+    let num_components = jp2_image.components.len();
+    let w = jp2_image.width;
+    let h = jp2_image.height;
+
+    match num_components {
+        1 => {
+            let pixels: Vec<u8> = jp2_image.components[0].data.iter()
+                .map(|&v| v.clamp(0, 255) as u8)
+                .collect();
+            let buf = ImageBuffer::from_raw(w, h, pixels)
+                .ok_or("failed to create gray buffer from JP2")?;
+            Ok(DynamicImage::ImageLuma8(buf))
+        }
+        3 => {
+            let r = &jp2_image.components[0].data;
+            let g = &jp2_image.components[1].data;
+            let b = &jp2_image.components[2].data;
+            let pixel_count = (w * h) as usize;
+            let mut rgb = Vec::with_capacity(pixel_count * 3);
+            for i in 0..pixel_count {
+                rgb.push(r.get(i).copied().unwrap_or(0).clamp(0, 255) as u8);
+                rgb.push(g.get(i).copied().unwrap_or(0).clamp(0, 255) as u8);
+                rgb.push(b.get(i).copied().unwrap_or(0).clamp(0, 255) as u8);
+            }
+            let buf = ImageBuffer::from_raw(w, h, rgb)
+                .ok_or("failed to create RGB buffer from JP2")?;
+            Ok(DynamicImage::ImageRgb8(buf))
+        }
+        4 => {
+            // CMYK — convert to RGB
+            let c = &jp2_image.components[0].data;
+            let m = &jp2_image.components[1].data;
+            let y = &jp2_image.components[2].data;
+            let k = &jp2_image.components[3].data;
+            let pixel_count = (w * h) as usize;
+            let mut rgb = Vec::with_capacity(pixel_count * 3);
+            for i in 0..pixel_count {
+                let cv = c.get(i).copied().unwrap_or(0).clamp(0, 255) as f64 / 255.0;
+                let mv = m.get(i).copied().unwrap_or(0).clamp(0, 255) as f64 / 255.0;
+                let yv = y.get(i).copied().unwrap_or(0).clamp(0, 255) as f64 / 255.0;
+                let kv = k.get(i).copied().unwrap_or(0).clamp(0, 255) as f64 / 255.0;
+                rgb.push(((1.0 - cv) * (1.0 - kv) * 255.0) as u8);
+                rgb.push(((1.0 - mv) * (1.0 - kv) * 255.0) as u8);
+                rgb.push(((1.0 - yv) * (1.0 - kv) * 255.0) as u8);
+            }
+            let buf = ImageBuffer::from_raw(w, h, rgb)
+                .ok_or("failed to create RGB buffer from CMYK JP2")?;
+            Ok(DynamicImage::ImageRgb8(buf))
+        }
+        _ => Err(format!("unsupported JP2 component count: {num_components}")),
+    }
 }
 
 /// Encode a DynamicImage as JPEG 2000 using justjp2.
@@ -1157,9 +1226,9 @@ pub fn collect_images(doc: &Document) -> Vec<PdfImage> {
 
             let (cs_name, components) = resolve_color_space(&stream.dict, doc);
 
-            let is_dct = stream.filters().is_ok_and(|filters| {
-                filters.iter().any(|f| f == b"DCTDecode")
-            });
+            let filters_list = stream.filters().unwrap_or_default();
+            let is_dct = filters_list.iter().any(|f| f == b"DCTDecode");
+            let is_jpx = filters_list.iter().any(|f| f == b"JPXDecode");
 
             // Skip images with SMask for now (alpha channels complicate things)
             if stream.dict.has(b"SMask") {
@@ -1178,6 +1247,7 @@ pub fn collect_images(doc: &Document) -> Vec<PdfImage> {
                 bpc,
                 components,
                 is_dct,
+                is_jpx,
                 color_space_name: cs_name,
             })
         })
@@ -1310,19 +1380,12 @@ fn decode_pdf_image(doc: &Document, info: &PdfImage) -> std::result::Result<Dyna
 
     if info.is_dct {
         // DCTDecode = JPEG bitstream. The stream content IS the JPEG data.
-        // If there are additional filters (e.g., Flate wrapping DCT), the content
-        // field holds the encoded bytes. For pure DCTDecode, content is raw JPEG.
         let filters = stream.filters().unwrap_or_default();
         let content = if filters.len() > 1 {
-            // Multiple filters — the outer filters wrap the JPEG bytes.
-            // get_plain_content strips all filters. But lopdf can't decode DCT,
-            // so we need to manually decompress only the non-DCT filters.
-            // For simplicity, try get_plain_content first, fall back to raw content.
             stream
                 .get_plain_content()
                 .unwrap_or_else(|_| stream.content.clone())
         } else {
-            // Single DCTDecode filter — content is raw JPEG bytes
             stream.content.clone()
         };
 
@@ -1330,6 +1393,11 @@ fn decode_pdf_image(doc: &Document, info: &PdfImage) -> std::result::Result<Dyna
             .with_guessed_format()
             .map_err(|e| format!("format guess: {e}"))?;
         reader.decode().map_err(|e| format!("JPEG decode: {e}"))
+    } else if info.is_jpx {
+        // JPXDecode = JPEG 2000 bitstream. Stream content IS the JP2/J2K data.
+        // lopdf can't decompress JPX, so read raw content directly.
+        let content = stream.content.clone();
+        decode_jpeg2000(&content)
     } else {
         // Raw pixel data — reconstruct based on width, height, BPC, components
         let content = stream

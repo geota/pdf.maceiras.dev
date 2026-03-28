@@ -8,7 +8,7 @@ import { usePageActions } from "./ui/PageActions";
 import { PanelLabel, PanelFooter } from "./ui/PanelControls";
 
 export default function PdfMetadata() {
-  const { sharedPdf, loadFile, loadFromBytes, flushOps } = useSharedPdf();
+  const { sharedPdf, loadFile, loadFromBytes, adoptHandle, flushOps } = useSharedPdf();
   const [handle, setHandle] = createSignal<string | null>(null);
   const [fileName, setFileName] = createSignal("");
   const [pageCount, setPageCount] = createSignal(0);
@@ -72,10 +72,7 @@ export default function PdfMetadata() {
 
   function handleMerged(mergedHandle: string, mergedPageCount: number, mergedFileName: string) {
     setPendingFiles(null);
-    setHandle(mergedHandle);
-    setFileName(mergedFileName);
-    setPageCount(mergedPageCount);
-    loadAll();
+    adoptHandle(mergedHandle, mergedPageCount, mergedFileName);
   }
 
   async function save() {

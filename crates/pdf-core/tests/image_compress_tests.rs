@@ -1,7 +1,7 @@
 mod helpers;
 
 use lopdf::{dictionary, Document, Object, Stream};
-use pdf_core::compress::{compress_bytes, compress_begin, compress_finish, AdvancedMode, CompressOptions, CompressionPreset};
+use pdf_core::compress::{compress_bytes, compress_begin, compress_finish, CompressOptions, CompressionPreset};
 use pdf_core::image_opt;
 use pdf_core::PdfDocument;
 
@@ -277,7 +277,7 @@ fn grayscale_converts_rgb_image() {
     let original_size = pdf.len();
 
     let mut doc = Document::load_mem(&pdf).unwrap();
-    let count = image_opt::convert_images_to_grayscale(&mut doc);
+    let count = image_opt::convert_images_to_grayscale(&mut doc, None);
 
     assert!(count > 0, "should have converted at least one image");
 
