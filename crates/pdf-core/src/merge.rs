@@ -2,6 +2,7 @@ use lopdf::Document;
 
 use crate::error::{PdfError, Result};
 use crate::page_utils::{create_empty_document, import_pages};
+use crate::repair::load_or_repair;
 
 /// Merge multiple PDFs (as byte slices) into a single PDF.
 /// Pages appear in the order of the input documents.
@@ -11,8 +12,8 @@ pub fn merge_bytes(pdfs: &[&[u8]]) -> Result<Vec<u8>> {
     }
 
     if pdfs.len() == 1 {
-        let mut doc = Document::load_mem(pdfs[0])
-            .map_err(|e| PdfError::InvalidPdf(e.to_string()))?;
+        let mut doc =
+            load_or_repair(pdfs[0]).map_err(|e| PdfError::InvalidPdf(e.to_string()))?;
         let mut buf = Vec::new();
         doc.save_to(&mut buf)?;
         return Ok(buf);
@@ -22,7 +23,7 @@ pub fn merge_bytes(pdfs: &[&[u8]]) -> Result<Vec<u8>> {
         .iter()
         .enumerate()
         .map(|(i, data)| {
-            Document::load_mem(data)
+            load_or_repair(data)
                 .map_err(|e| PdfError::MergeFailed(format!("document {i}: {e}")))
         })
         .collect::<Result<Vec<_>>>()?;

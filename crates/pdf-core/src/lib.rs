@@ -7,6 +7,7 @@ pub mod merge;
 pub mod page_ops;
 pub mod page_utils;
 pub mod reorder;
+pub mod repair;
 pub mod split;
 pub mod types;
 
