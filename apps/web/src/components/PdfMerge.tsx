@@ -206,7 +206,7 @@ export default function PdfMerge() {
             </Show>
 
             {/* Add more */}
-            <DropZone onFiles={addMoreFiles} accept=".pdf" multiple>
+            <DropZone onFiles={addMoreFiles} accept=".pdf,application/pdf" multiple>
               <p class="text-xs text-gray-500">
                 <span class="font-medium">+ Add PDFs</span>
               </p>

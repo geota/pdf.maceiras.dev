@@ -67,10 +67,12 @@ export default function DropZone(props: Props) {
       }`}
     >
       <input
-        ref={inputRef}
+        ref={(el) => {
+          inputRef = el;
+          if (props.multiple) el.multiple = true;
+        }}
         type="file"
         accept={props.accept}
-        multiple={props.multiple}
         onInput={handleInput}
         class="hidden"
       />

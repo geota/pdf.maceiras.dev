@@ -56,7 +56,7 @@ export default function PdfViewer(props: Props) {
     <div class="h-full flex flex-col">
       <Show when={!handle()}>
         <div class="p-6">
-          <DropZone onFiles={handleFiles} accept=".pdf">
+          <DropZone onFiles={handleFiles} accept=".pdf,application/pdf">
             <p class="text-sm text-gray-500">
               <span class="font-medium">Drop PDF files here</span> or click to browse
             </p>
