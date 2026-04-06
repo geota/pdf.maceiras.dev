@@ -4,6 +4,8 @@ interface Props {
   onFiles: (files: File[]) => void;
   accept?: string;
   multiple?: boolean;
+  /** Stretch to fill parent height */
+  fill?: boolean;
   children?: JSX.Element;
 }
 
@@ -60,7 +62,9 @@ export default function DropZone(props: Props) {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       onClick={() => inputRef?.click()}
-      class={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
+      class={`border-2 border-dashed rounded-lg p-12 text-center cursor-pointer transition-colors ${
+        props.fill ? "h-full flex items-center justify-center " : ""
+      }${
         dragOver()
           ? "border-blue-500 bg-blue-50"
           : "border-gray-300 hover:border-gray-400"
@@ -80,7 +84,7 @@ export default function DropZone(props: Props) {
         when={props.children}
         fallback={
           <div class="text-sm text-gray-500">
-            <p class="font-medium">Drop PDF files here</p>
+            <p class="font-medium">Drop {props.multiple ? "PDF files" : "a PDF file"} here</p>
             <p class="mt-1">or click to browse</p>
           </div>
         }

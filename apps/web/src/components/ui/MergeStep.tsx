@@ -1,4 +1,5 @@
 import { createSignal, For, Show, onCleanup } from "solid-js";
+import { Portal } from "solid-js/web";
 import {
   DragDropProvider,
   DragDropSensors,
@@ -9,6 +10,8 @@ import {
 } from "@thisbeyond/solid-dnd";
 import * as pdfWorker from "../../pdf-worker-client";
 import { getRenderPool } from "../../render-pool";
+import DropZone from "./DropZone";
+import { PanelLabel } from "./PanelControls";
 
 interface LoadedPdf {
   id: string;
@@ -82,6 +85,21 @@ export default function MergeStep(props: MergeStepProps) {
   // Kick off loading immediately
   loadFiles();
 
+  async function addMoreFiles(newFiles: File[]) {
+    for (const file of newFiles) {
+      try {
+        const data = await file.arrayBuffer();
+        const { handle, pageCount } = await pdfWorker.loadDocument(data);
+        let thumbnail: ImageData | null = null;
+        try { thumbnail = await pdfWorker.renderPage(handle, 0, 120); } catch {}
+        const id = `ms_${nextId++}`;
+        setItems((prev) => [...prev, { id, name: file.name, handle, pageCount, thumbnail }]);
+      } catch (err: any) {
+        setError(err.message || `Failed to load ${file.name}`);
+      }
+    }
+  }
+
   function removeFile(id: string) {
     setItems((prev) => {
       const item = prev.find((f) => f.id === id);
@@ -136,56 +154,97 @@ export default function MergeStep(props: MergeStepProps) {
     }
   }
 
+  const footerMount = document.getElementById("merge-step-footer");
+
   return (
-    <div class="mt-4">
-      <div class="flex items-center justify-between mb-3">
-        <p class="text-sm text-gray-600">
-          {items().length} files — drag to set merge order, then continue
-        </p>
-        <button
-          onClick={props.onStartOver}
-          class="text-xs text-gray-500 hover:underline"
-        >
-          Start over
-        </button>
+    <>
+      <div class="flex-1 flex min-h-0">
+        {/* Center: empty placeholder */}
+        <div class="flex-1 overflow-y-auto p-4">
+          <Show when={error()}>
+            <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded text-sm">
+              {error()}
+            </div>
+          </Show>
+        </div>
+
+        {/* Right panel — matches PdfMerge layout */}
+        <aside class="w-80 shrink-0 border-l border-gray-200 bg-white flex flex-col">
+          <div class="px-4 py-3 border-b border-gray-100 shrink-0">
+            <h3 class="text-sm font-medium text-gray-900">Merge</h3>
+          </div>
+          <div class="flex flex-col flex-1 min-h-0">
+            <div class="flex-1 overflow-y-auto p-4 space-y-4">
+              <Show when={loaded()} fallback={<p class="text-sm text-gray-400">Loading files...</p>}>
+                <Show when={items().length > 0}>
+                  <div class="space-y-1.5">
+                    <PanelLabel>Documents</PanelLabel>
+                    <DragDropProvider onDragEnd={onDragEnd} collisionDetector={closestCenter}>
+                      <DragDropSensors />
+                      <SortableProvider ids={items().map((f) => f.id)}>
+                        <ul class="space-y-1.5">
+                          <For each={items()}>
+                            {(file) => <SortableItem file={file} onRemove={removeFile} />}
+                          </For>
+                        </ul>
+                      </SortableProvider>
+                    </DragDropProvider>
+                  </div>
+                </Show>
+
+                <DropZone onFiles={addMoreFiles} accept=".pdf,application/pdf" multiple>
+                  <p class="text-xs text-gray-500">
+                    <span class="font-medium">+ Add PDFs</span>
+                  </p>
+                </DropZone>
+              </Show>
+            </div>
+
+            {/* Panel footer — matches PanelFooter style */}
+            <div class="p-4 border-t border-gray-100 space-y-3">
+              <div class="flex items-center justify-between text-xs text-gray-400">
+                <span>
+                  <Show when={loaded()} fallback={`Loading ${props.files.length} files...`}>
+                    {items().length} {items().length === 1 ? "document" : "documents"}
+                  </Show>
+                </span>
+              </div>
+              <button
+                onClick={handleContinue}
+                disabled={!loaded() || items().length < 1 || merging()}
+                class="w-full py-2 bg-blue-600 text-white rounded text-sm font-medium disabled:opacity-40"
+              >
+                {merging() ? "Merging..." : "Continue"}
+              </button>
+            </div>
+          </div>
+        </aside>
       </div>
 
-      <Show when={loaded()} fallback={<p class="text-sm text-gray-400">Loading files...</p>}>
-        <DragDropProvider onDragEnd={onDragEnd} collisionDetector={closestCenter}>
-          <DragDropSensors />
-          <SortableProvider ids={items().map((f) => f.id)}>
-            <ul class="space-y-2">
-              <For each={items()}>
-                {(file) => <SortableFileItem file={file} onRemove={removeFile} />}
-              </For>
-            </ul>
-          </SortableProvider>
-        </DragDropProvider>
-
-        <div class="mt-4 flex items-center gap-3">
-          <button
-            onClick={handleContinue}
-            disabled={items().length < 1 || merging()}
-            class="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-50 text-sm font-medium"
-          >
-            {merging() ? "Merging..." : "Continue"}
-          </button>
-          <span class="text-xs text-gray-400">
-            Files will be merged in this order
-          </span>
-        </div>
+      <Show when={footerMount}>
+        <Portal mount={footerMount!}>
+          <div class="flex items-center justify-between px-3 py-1 border-t shrink-0 border-gray-200 bg-gray-50">
+            <p class="text-xs text-gray-500">
+              <Show when={loaded()} fallback={`Loading ${props.files.length} files...`}>
+                {items().length} {items().length === 1 ? "file" : "files"}
+              </Show>
+            </p>
+            <div class="flex items-center gap-3">
+              <button
+                onClick={props.onStartOver}
+                class="text-xs font-medium hover:underline text-red-500 hover:text-red-700"
+              >
+                Restart
+              </button>
+            </div>
+          </div>
+        </Portal>
       </Show>
-
-      <Show when={error()}>
-        <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mt-4 text-sm">
-          {error()}
-        </div>
-      </Show>
-    </div>
+    </>
   );
 }
 
-function SortableFileItem(props: {
+function SortableItem(props: {
   file: LoadedPdf;
   onRemove: (id: string) => void;
 }) {
@@ -206,32 +265,32 @@ function SortableFileItem(props: {
         sortable(el);
         requestAnimationFrame(renderThumb);
       }}
-      class="flex items-center gap-3 bg-white border border-gray-200 rounded-lg p-3 shadow-sm cursor-grab active:cursor-grabbing"
+      class="flex items-center gap-2 bg-white border border-gray-200 rounded p-2 cursor-grab active:cursor-grabbing"
       classList={{ "opacity-50": sortable.isActiveDraggable }}
     >
       <Show
         when={props.file.thumbnail}
-        fallback={<div class="w-10 h-14 bg-gray-100 rounded shrink-0" />}
+        fallback={<div class="w-8 h-10 bg-gray-100 rounded shrink-0" />}
       >
         <canvas
           ref={(el) => {
             canvasRef = el;
             requestAnimationFrame(renderThumb);
           }}
-          class="w-10 h-auto rounded shrink-0"
+          class="w-8 h-auto rounded shrink-0"
         />
       </Show>
       <div class="flex-1 min-w-0">
-        <p class="text-sm font-medium truncate">{props.file.name}</p>
-        <p class="text-xs text-gray-400">
+        <p class="text-xs font-medium truncate">{props.file.name}</p>
+        <p class="text-[10px] text-gray-400">
           {props.file.pageCount} page{props.file.pageCount !== 1 ? "s" : ""}
         </p>
       </div>
       <button
         onClick={() => props.onRemove(props.file.id)}
-        class="text-red-400 hover:text-red-600 text-sm shrink-0"
+        class="text-red-400 hover:text-red-600 text-xs shrink-0"
       >
-        Remove
+        x
       </button>
     </li>
   );

@@ -18,6 +18,8 @@ interface Props {
   panel?: JSX.Element;
   /** Title shown at top of the right panel. */
   panelTitle?: string;
+  /** Remove padding from the main content area. */
+  noPadding?: boolean;
 }
 
 /** Shared layout shell for PDF tool pages.
@@ -27,8 +29,8 @@ export default function PdfToolLayout(props: Props) {
   return (
     <div class="h-full flex flex-col">
       <Show when={!props.handle() && !props.pendingFiles()}>
-        <div class="p-6">
-          <DropZone onFiles={props.onFiles} accept=".pdf,application/pdf" multiple>
+        <div class="flex-1 p-6">
+          <DropZone onFiles={props.onFiles} accept=".pdf,application/pdf" multiple fill>
             <p class="text-sm text-gray-500">
               <span class="font-medium">Drop PDF files here</span> or click to browse
             </p>
@@ -38,20 +40,18 @@ export default function PdfToolLayout(props: Props) {
 
       <Show when={props.pendingFiles()}>
         {(files) => (
-          <div class="p-6">
-            <MergeStep
-              files={files()}
-              onMerged={props.onMerged}
-              onStartOver={props.onResetFiles}
-            />
-          </div>
+          <MergeStep
+            files={files()}
+            onMerged={props.onMerged}
+            onStartOver={props.onResetFiles}
+          />
         )}
       </Show>
 
       <Show when={props.handle()}>
         <div class="flex-1 flex min-h-0">
           {/* Center: main content (grid) */}
-          <div class="flex-1 overflow-y-auto p-4">
+          <div class={`flex-1 flex flex-col overflow-y-auto${props.noPadding ? "" : " p-4"}`}>
             {props.children}
           </div>
 

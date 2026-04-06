@@ -80,6 +80,8 @@ function AppInner() {
         </main>
       </div>
 
+      <div id="merge-step-footer" />
+
       <Show when={sharedPdf()}>
         <PdfBottomBar
           info={

@@ -1,5 +1,5 @@
 import { createSignal, createEffect, Show, on } from "solid-js";
-import DropZone from "./ui/DropZone";
+import PdfToolLayout from "./ui/PdfToolLayout";
 import DocumentViewer from "./ui/DocumentViewer";
 import { useSharedPdf } from "../PdfContext";
 
@@ -15,11 +15,12 @@ interface Props {
 }
 
 export default function PdfViewer(props: Props) {
-  const { sharedPdf, loadFile } = useSharedPdf();
+  const { sharedPdf, loadFile, adoptHandle } = useSharedPdf();
   const [handle, setHandle] = createSignal<string | null>(null);
   const [pageCount, setPageCount] = createSignal(0);
   const [error, setError] = createSignal("");
   const [activePage, setActivePage] = createSignal(props.initialPage ?? 0);
+  const [pendingFiles, setPendingFiles] = createSignal<File[] | null>(null);
 
   // Sync from shared PDF when it changes
   createEffect(on(sharedPdf, (pdf) => {
@@ -45,6 +46,12 @@ export default function PdfViewer(props: Props) {
   async function handleFiles(files: File[]) {
     if (!files.length) return;
     setError("");
+
+    if (files.length > 1) {
+      setPendingFiles(files);
+      return;
+    }
+
     try {
       await loadFile(files[0]);
     } catch (err: any) {
@@ -52,34 +59,36 @@ export default function PdfViewer(props: Props) {
     }
   }
 
+  function handleMerged(mergedHandle: string, mergedPageCount: number, mergedFileName: string) {
+    setPendingFiles(null);
+    adoptHandle(mergedHandle, mergedPageCount, mergedFileName);
+  }
+
+  function resetState() {
+    setPendingFiles(null);
+    setError("");
+  }
+
   return (
-    <div class="h-full flex flex-col">
-      <Show when={!handle()}>
-        <div class="p-6">
-          <DropZone onFiles={handleFiles} accept=".pdf,application/pdf">
-            <p class="text-sm text-gray-500">
-              <span class="font-medium">Drop PDF files here</span> or click to browse
-            </p>
-          </DropZone>
-        </div>
-      </Show>
-
-      <Show when={error()}>
-        <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mt-4 text-sm">
-          {error()}
-        </div>
-      </Show>
-
-      <Show when={handle()}>
-        <DocumentViewer
-          handle={handle()!}
-          pageCount={pageCount()}
-          initialPage={props.initialPage}
-          onActivePageChange={handleActivePage}
-          onActivePageDimsChange={handleDims}
-          theme={props.dark ? "dark" : "light"}
-        />
-      </Show>
-    </div>
+    <PdfToolLayout
+      handle={handle}
+      error={error}
+      pendingFiles={pendingFiles}
+      previewPage={() => null}
+      onFiles={handleFiles}
+      onMerged={handleMerged}
+      onResetFiles={resetState}
+      onClosePreview={() => {}}
+      noPadding
+    >
+      <DocumentViewer
+        handle={handle()!}
+        pageCount={pageCount()}
+        initialPage={props.initialPage}
+        onActivePageChange={handleActivePage}
+        onActivePageDimsChange={handleDims}
+        theme={props.dark ? "dark" : "light"}
+      />
+    </PdfToolLayout>
   );
 }

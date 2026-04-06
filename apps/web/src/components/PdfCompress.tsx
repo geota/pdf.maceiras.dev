@@ -138,12 +138,17 @@ export default function PdfCompress() {
   }
 
   async function handleFiles(files: File[]) {
-    const file = files[0];
-    if (!file) return;
+    if (!files.length) return;
     resetState();
+
+    if (files.length > 1) {
+      setPendingFiles(files);
+      return;
+    }
+
     setError("");
     try {
-      await loadFile(file);
+      await loadFile(files[0]);
     } catch (err: any) {
       setError(err.message || "Failed to load PDF");
     }
