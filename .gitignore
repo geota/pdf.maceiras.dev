@@ -10,3 +10,8 @@ packages/pdf-wasm-pkg/
 # Keep PDFium binary tracked
 !crates/pdf-wasm/pdfium/*.js
 !crates/pdf-wasm/pdfium/*.wasm
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
