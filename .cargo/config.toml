@@ -2,7 +2,7 @@
 rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
 
 [env]
-# Homebrew LLVM clang for wasm32 C compilation (libdeflate-sys).
+# zerobrew LLVM clang for wasm32 C compilation (libdeflate-sys).
 # Uses -I (not -isystem) to prevent macOS SDK headers from being injected.
-CC_wasm32_unknown_unknown = "/opt/homebrew/opt/llvm/bin/clang"
-CFLAGS_wasm32_unknown_unknown = "--target=wasm32-unknown-unknown --no-default-config -nostdinc -I /opt/homebrew/Cellar/llvm/22.1.1/lib/clang/22/include -ffreestanding"
+CC_wasm32_unknown_unknown = "/opt/zerobrew/opt/llvm/bin/clang"
+CFLAGS_wasm32_unknown_unknown = "--target=wasm32-unknown-unknown --no-default-config -nostdinc -I /opt/zerobrew/opt/llvm/lib/clang/23/include -ffreestanding"
